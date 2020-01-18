@@ -12,7 +12,7 @@ use std::io::{self, Write};
 use std::path::Path;
 use std::collections::HashSet;
 use acme_client::Directory;
-use acme_client::error::Result;
+use acme_client::error::{Result, ToError};
 use clap::{Arg, App, SubCommand, ArgMatches};
 
 
@@ -182,17 +182,17 @@ fn sign_certificate(matches: &ArgMatches) -> Result<()> {
         names_from_csr(csr_path)?.into_iter().collect()
     } else {
         matches.values_of("DOMAIN")
-            .ok_or("You need to provide at least one domain name")?.map(|s| s.to_owned()).collect()
+            .ok_or_else(|| "You need to provide at least one domain name".to_err())?.map(|s| s.to_owned()).collect()
     };
 
     // domains could be empty if provided --csr doesn't contain any
     if domains.is_empty() {
         return Err("You need to provide at least one domain name with --domain argument \
-                   or from --csr".into());
+                   or from --csr".to_err());
     }
 
     let directory = Directory::from_url(matches.value_of("DIRECTORY")
-                                        .ok_or("Directory URL not found")?)?;
+                                        .ok_or_else(|| "Directory URL not found".to_err())?)?;
 
     let mut account_registration = directory.account_registration();
 
@@ -209,15 +209,15 @@ fn sign_certificate(matches: &ArgMatches) -> Result<()> {
     for domain in &domains {
         let authorization = account.authorization(domain)?;
         if !matches.is_present("DNS_CHALLENGE") {
-            let challenge = authorization.get_http_challenge().ok_or("HTTP challenge not found")?;
+            let challenge = authorization.get_http_challenge().ok_or_else(|| "HTTP challenge not found".to_err())?;
             challenge.save_key_authorization(matches.value_of("PUBLIC_DIR")
-                                                 .ok_or("--public-dir not defined. \
+                                                 .ok_or_else(|| "--public-dir not defined. \
                                                             You need to define a public \
                                                             directory to use http challenge \
-                                                            verification")?)?;
+                                                            verification".to_err())?)?;
             challenge.validate()?;
         } else {
-            let challenge = authorization.get_dns_challenge().ok_or("DNS challenge not found")?;
+            let challenge = authorization.get_dns_challenge().ok_or_else(|| "DNS challenge not found".to_err())?;
             println!("Please create a TXT record for _acme-challenge.{}: {}\n\
                       Press enter to continue",
                      domain,
@@ -271,17 +271,17 @@ fn sign_certificate(matches: &ArgMatches) -> Result<()> {
 
 fn revoke_certificate(matches: &ArgMatches) -> Result<()> {
     let directory = Directory::from_url(matches.value_of("DIRECTORY")
-                                        .ok_or("Directory URL not found")?)?;
+                                        .ok_or_else(|| "Directory URL not found".to_err())?)?;
     let account = directory.account_registration()
         .pkey_from_file(matches.value_of("USER_KEY")
-                            .ok_or("You need to provide user \
+                            .ok_or_else(|| "You need to provide user \
                                    or domain private key used \
-                                   to sign certificate.")?)?
+                                   to sign certificate.".to_err())?)?
         .register()?;
     account.revoke_certificate_from_file(matches.value_of("SIGNED_CRT")
-                                             .ok_or("You need to provide \
+                                             .ok_or_else(|| "You need to provide \
                                                     a signed certificate to \
-                                                    revoke.")?)?;
+                                                    revoke.".to_err())?)?;
     Ok(())
 }
 
@@ -391,10 +391,10 @@ fn gen_key() -> Result<()> {
 
 fn gen_csr(matches: &ArgMatches) -> Result<()> {
     let pkey = acme_client::helper::read_pkey(matches.value_of("DOMAIN_KEY")
-                                              .ok_or("You need to provide private domain key \
-                                                     with --key option")?)?;
+                                              .ok_or_else(|| "You need to provide private domain key \
+                                                     with --key option".to_err())?)?;
     let names: Vec<&str> = matches.values_of("DOMAIN")
-        .ok_or("You need to provide at least one domain name")?
+        .ok_or_else(|| "You need to provide at least one domain name".to_err())?
         .collect();
     let csr = acme_client::helper::gen_csr(&pkey, &names)?;
     io::stdout().write_all(&csr.to_pem()?)?;

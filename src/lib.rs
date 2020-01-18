@@ -270,12 +270,9 @@
 //! * [Let's Encrypt ACME divergences](https://github.com/letsencrypt/boulder/blob/9c1e8e6764c1de195db6467057e0d148608e411d/docs/acme-divergences.md)
 
 pub extern crate openssl;
-#[macro_use]
-extern crate log;
-#[macro_use]
-extern crate error_chain;
-#[macro_use]
-extern crate hyper;
+#[macro_use] extern crate log;
+#[macro_use] extern crate failure;
+#[macro_use] extern crate hyper;
 extern crate reqwest;
 extern crate serde;
 extern crate serde_json;
@@ -293,22 +290,25 @@ use openssl::x509::{X509, X509Req};
 
 use reqwest::{Client, StatusCode};
 
-use helper::{gen_key, b64, read_pkey, gen_csr};
-use error::{Result, ErrorKind};
+use self::helper::{gen_key, b64, read_pkey, gen_csr};
+use self::error::*;
 
 use serde_json::{Value, from_str, to_string, to_value};
 use serde::Serialize;
 
 /// Default Let's Encrypt directory URL to configure client.
-pub const LETSENCRYPT_DIRECTORY_URL: &'static str = "https://acme-v01.api.letsencrypt.org\
-                                                     /directory";
+pub const LETSENCRYPT_DIRECTORY_URL: &'static str = "https://acme-v02.api.letsencrypt.org/directory";
+
+/// Default Let's Encrypt staging directory URL to configure client.
+pub const LETSENCRYPT_STAGING_DIRECTORY_URL: &'static str = "https://acme-staging-v02.api.letsencrypt.org/directory";
+
 /// Default Let's Encrypt agreement URL used in account registration.
-pub const LETSENCRYPT_AGREEMENT_URL: &'static str = "https://letsencrypt.org/documents/LE-SA-v1.2-\
-                                                     November-15-2017.pdf";
+pub const LETSENCRYPT_AGREEMENT_URL: &'static str = "https://letsencrypt.org/documents/LE-SA-v1.2-November-15-2017.pdf";
+
 /// Default Let's Encrypt intermediate certificate URL to chain when needed.
-pub const LETSENCRYPT_INTERMEDIATE_CERT_URL: &'static str = "https://letsencrypt.org/certs/\
-                                                             lets-encrypt-x3-cross-signed.pem";
-/// Default bit lenght for RSA keys and `X509_REQ`
+pub const LETSENCRYPT_INTERMEDIATE_CERT_URL: &'static str = "https://letsencrypt.org/certs/lets-encrypt-x3-cross-signed.pem";
+
+/// Default bit length for RSA keys and `X509_REQ`
 const BIT_LENGTH: u32 = 2048;
 
 
@@ -386,6 +386,12 @@ impl Directory {
         Directory::from_url(LETSENCRYPT_DIRECTORY_URL)
     }
 
+    /// Creates a Directory from
+    /// [`LETSENCRYPT_STAGING_DIRECTORY_URL`](constant.LETSENCRYPT_STAGING_DIRECTORY_URL.html).
+    pub fn lets_encrypt_staging() -> Result<Directory> {
+        Directory::from_url(LETSENCRYPT_STAGING_DIRECTORY_URL)
+    }
+
     /// Creates a Directory from directory URL.
     ///
     /// Example directory for testing `acme-client` crate with staging API:
@@ -454,7 +460,7 @@ impl Directory {
         let res = client.get(url).send()?;
         res.headers()
             .get::<hyperx::ReplayNonce>()
-            .ok_or("Replay-Nonce header not found".into())
+            .ok_or("Replay-Nonce header not found".to_err())
             .and_then(|nonce| Ok(nonce.as_str().to_string()))
     }
 
@@ -477,7 +483,7 @@ impl Directory {
         let client = Client::new()?;
         let mut res = client
             .post(self.url_for(resource)
-                      .ok_or(format!("URL for resource: {} not found", resource))?)
+                      .ok_or(format_err!("URL for resource: {} not found", resource))?)
             .body(&jws[..])
             .send()?;
 
@@ -558,30 +564,30 @@ impl Account {
         let (status, resp) = self.directory().request(self.pkey(), "new-authz", map)?;
 
         if status != StatusCode::Created {
-            return Err(ErrorKind::AcmeServerError(resp).into());
+            return Err(AcmeServerError(resp).into());
         }
 
         let mut challenges = Vec::new();
         for challenge in resp.as_object()
                 .and_then(|obj| obj.get("challenges"))
                 .and_then(|c| c.as_array())
-                .ok_or("No challenge found")? {
+                .ok_or_else(|| "No challenge found".to_err())? {
 
             let obj = challenge
                 .as_object()
-                .ok_or("Challenge object not found")?;
+                .ok_or_else(|| "Challenge object not found".to_err())?;
 
             let ctype = obj.get("type")
                 .and_then(|t| t.as_str())
-                .ok_or("Challenge type not found")?
+                .ok_or_else(|| "Challenge type not found".to_err())?
                 .to_owned();
             let uri = obj.get("uri")
                 .and_then(|t| t.as_str())
-                .ok_or("URI not found")?
+                .ok_or_else(|| "URI not found".to_err())?
                 .to_owned();
             let token = obj.get("token")
                 .and_then(|t| t.as_str())
-                .ok_or("Token not found")?
+                .ok_or_else(|| "Token not found".to_err())?
                 .to_owned();
 
             // This seems really cryptic but it's not
@@ -648,7 +654,7 @@ impl Account {
         match status {
             StatusCode::Ok => info!("Certificate successfully revoked"),
             StatusCode::Conflict => warn!("Certificate already revoked"),
-            _ => return Err(ErrorKind::AcmeServerError(resp).into()),
+            _ => return Err(AcmeServerError(resp).into()),
         }
 
         Ok(())
@@ -735,7 +741,7 @@ impl AccountRegistration {
         match status {
             StatusCode::Created => debug!("User successfully registered"),
             StatusCode::Conflict => debug!("User already registered"),
-            _ => return Err(ErrorKind::AcmeServerError(resp).into()),
+            _ => return Err(AcmeServerError(resp).into()),
         };
 
         Ok(Account {
@@ -799,7 +805,7 @@ impl<'a> CertificateSigner<'a> {
             .post(self.account
                       .directory()
                       .url_for("new-cert")
-                      .ok_or("new-cert url not found")?)
+                      .ok_or_else(|| "new-cert url not found".to_err())?)
             .body(&jws[..])
             .send()?;
 
@@ -809,7 +815,7 @@ impl<'a> CertificateSigner<'a> {
                 res.read_to_string(&mut res_content)?;
                 from_str(&res_content)?
             };
-            return Err(ErrorKind::AcmeServerError(res_json).into());
+            return Err(AcmeServerError(res_json).into());
         }
 
         let mut crt_der = Vec::new();
@@ -1025,7 +1031,7 @@ impl<'a> Challenge<'a> {
         };
 
         if resp.status() != &StatusCode::Accepted {
-            return Err(ErrorKind::AcmeServerError(res_json).into());
+            return Err(AcmeServerError(res_json).into());
         }
 
         loop {
@@ -1033,7 +1039,7 @@ impl<'a> Challenge<'a> {
                 .as_object()
                 .and_then(|o| o.get("status"))
                 .and_then(|s| s.as_str())
-                .ok_or("Status not found")?
+                .ok_or_else(|| "Status not found".to_err())?
                 .to_owned();
 
             if status == "pending" {
@@ -1047,7 +1053,7 @@ impl<'a> Challenge<'a> {
             } else if status == "valid" {
                 return Ok(());
             } else if status == "invalid" {
-                return Err(ErrorKind::AcmeServerError(res_json).into());
+                return Err(AcmeServerError(res_json).into());
             }
 
             use std::thread::sleep;
@@ -1068,33 +1074,26 @@ mod hyperx {
 
 /// Error and result types.
 pub mod error {
-    use std::io;
-    use openssl;
-    use hyper;
-    use reqwest;
-    use serde_json;
+    pub type Result<T> = std::result::Result<T, failure::Error>;
 
-    error_chain! {
-        types {
-            Error, ErrorKind, ChainErr, Result;
+
+    pub trait ToError {
+        fn to_err(&self) -> failure::Error;
+    }
+
+    impl<'a> ToError for &'a str {
+        fn to_err(&self) -> failure::Error {
+            format_err!("{}", self)
         }
+    }
 
-        links {
-        }
 
-        foreign_links {
-            OpenSslErrorStack(openssl::error::ErrorStack);
-            IoError(io::Error);
-            HyperError(hyper::Error);
-            ReqwestError(reqwest::Error);
-            ValueParserError(serde_json::Error);
-        }
+    #[derive(Debug, Fail)]
+    pub struct AcmeServerError(pub serde_json::Value);
 
-        errors {
-            AcmeServerError(resp: serde_json::Value) {
-                description("Acme server error")
-                    display("Acme server error: {}", acme_server_error_description(resp))
-            }
+    impl std::fmt::Display for AcmeServerError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "Acme server error {}", acme_server_error_description(&self.0))
         }
     }
 
@@ -1124,7 +1123,7 @@ pub mod helper {
     use openssl::x509::extension::SubjectAlternativeName;
     use openssl::stack::Stack;
     use openssl::hash::MessageDigest;
-    use error::Result;
+    use crate::error::{Result, ToError};
 
 
     /// Generates new PKey.
@@ -1159,7 +1158,7 @@ pub mod helper {
     /// Returns X509Req and PKey used to sign X509Req.
     pub fn gen_csr(pkey: &PKey<openssl::pkey::Private>, domains: &[&str]) -> Result<X509Req> {
         if domains.is_empty() {
-            return Err("You need to supply at least one or more domain names".into());
+            return Err("You need to supply at least one or more domain names".to_err());
         }
 
         let mut builder = X509Req::builder()?;
