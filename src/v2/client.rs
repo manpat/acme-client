@@ -109,7 +109,7 @@ impl AcmeClient {
 			let jws = format_jws(&nonce, &self.new_account_uri, &pkey, None, &json)?;
 
 			let res = self.client.post(&self.new_account_uri)
-				.header(Self::content_type())
+				.header(Self::jose_json_content_type())
 				.body(&jws[..])
 				.send()?;
 
@@ -139,31 +139,15 @@ impl AcmeClient {
 	pub fn submit_order(&self, account: &Account, domain: &str) -> Result<Order> {
 		info!("Sending new order request for {}", domain);
 
-		let mut payload = HashMap::new();
-		payload.insert("identifiers".to_owned(), {
-			let mut payload = HashMap::new();
-			payload.insert("type".to_owned(), "dns".to_owned());
-			payload.insert("value".to_owned(), domain.to_owned());
-			vec![payload]
-		});
-
 		let payload = json!({
 			"identifiers": [{"type": "dns", "value": domain}],
 			"resource": "newOrder"
 		});
 
 		let (http_status, body) = {
-			let mut res = self.post_with_account(&self.new_order_uri, &account, &to_string(&payload)?, Some("newOrder"))?;
-
-			let res_json = {
-				let mut res_content = String::new();
-				res.read_to_string(&mut res_content)?;
-				if !res_content.is_empty() {
-					from_str(&res_content)?
-				} else {
-					to_value(true)?
-				}
-			};
+			let mut res = self.post_with_account(&self.new_order_uri, &account, &to_string(&payload)?)?;
+			let body = response_to_string(&mut res)?;
+			let res_json = from_str(&body)?;
 
 			(*res.status(), res_json)
 		};
@@ -173,13 +157,6 @@ impl AcmeClient {
 		}
 
 		let object = body.as_object().ok_or_else(|| "Malformed response to newOrder request".to_err())?;
-
-		let status = object.get("status")
-			.and_then(|val| val.as_str())
-			.ok_or_else(|| "newOrder response is missing 'status' entry".to_err())?;
-
-		info!("status {:?}", status);
-
 
 		let authorizations = object.get("authorizations")
 			.and_then(|val| val.as_array())
@@ -204,51 +181,48 @@ impl AcmeClient {
 		use crate::helper::*;
 		use openssl::hash::{hash, MessageDigest};
 
-		let mut response = self.post_with_account(authorization_uri, &account, "{}", None)?;
+		let mut response = self.get_with_account(authorization_uri, &account)?;
 
-		let mut res_content = String::new();
-		response.read_to_string(&mut res_content)?;
-		let response_json: HashMap<String, Value> = from_str(&res_content)?;
-
-		info!("{:?}", response);
-
+		let body = response_to_string(&mut response)?;
+		let response_json: HashMap<String, Value> = from_str(&body)?;
 		
 		// let mut challenges = Vec::new();
 		for challenge in response_json.get("challenges")
 				.and_then(|c| c.as_array())
 				.ok_or_else(|| "No challenge found".to_err())? {
 
-			let obj = challenge
-				.as_object()
+			let obj = challenge.as_object()
 				.ok_or_else(|| "Challenge object not found".to_err())?;
 
-			let ctype = obj.get("type")
-				.and_then(|t| t.as_str())
-				.ok_or_else(|| "Challenge type not found".to_err())?
-				.to_owned();
-			let uri = obj.get("uri")
-				.and_then(|t| t.as_str())
-				.ok_or_else(|| "URI not found".to_err())?
-				.to_owned();
-			let token = obj.get("token")
-				.and_then(|t| t.as_str())
-				.ok_or_else(|| "Token not found".to_err())?
-				.to_owned();
+			info!("{:?}", obj);
+
+			// let ctype = obj.get("type")
+			// 	.and_then(|t| t.as_str())
+			// 	.ok_or_else(|| "Challenge type not found".to_err())?
+			// 	.to_owned();
+			// let uri = obj.get("uri")
+			// 	.and_then(|t| t.as_str())
+			// 	.ok_or_else(|| "URI not found".to_err())?
+			// 	.to_owned();
+			// let token = obj.get("token")
+			// 	.and_then(|t| t.as_str())
+			// 	.ok_or_else(|| "Token not found".to_err())?
+			// 	.to_owned();
 
 			// This seems really cryptic but it's not
 			// https://tools.ietf.org/html/draft-ietf-acme-acme-05#section-7.1
 			// key-authz = token || '.' || base64url(JWK\_Thumbprint(accountKey))
-			let key_authorization = format!("{}.{}",
-											token,
-											b64(&hash(MessageDigest::sha256(),
-													   &to_string(&jwk(&account.pkey)?)?
-																.into_bytes())?));
+			// let key_authorization = format!("{}.{}",
+			// 								token,
+			// 								b64(&hash(MessageDigest::sha256(),
+			// 										   &to_string(&jwk(&account.pkey)?)?
+			// 													.into_bytes())?));
 
-			info!("{:?}", obj);
-			info!("{:?}", ctype);
-			info!("{:?}", uri);
-			info!("{:?}", token);
-			info!("{:?}", key_authorization);
+			// info!("{:?}", obj);
+			// info!("{:?}", ctype);
+			// info!("{:?}", uri);
+			// info!("{:?}", token);
+			// info!("{:?}", key_authorization);
 
 			// let challenge = Challenge {
 			// 	account: self,
@@ -264,14 +238,11 @@ impl AcmeClient {
 	}
 
 
-	fn post_with_account(&self, uri: &str, acct: &Account, payload: &str, resource: Option<&str>) -> Result<reqwest::Response> {
-		// let mut json = to_value(&payload)?;
-		// if let Some(s) = resource {
-		// 	if let Some(obj) = json.as_object_mut() {
-		// 		obj.insert("resource".to_owned(), json!(s));
-		// 	}
-		// }
+	fn get_with_account(&self, uri: &str, acct: &Account) -> Result<reqwest::Response> {
+		self.post_with_account(uri, acct, "")
+	}
 
+	fn post_with_account(&self, uri: &str, acct: &Account, payload: &str) -> Result<reqwest::Response> {
 		info!("{:?}", payload);
 
 		let nonce = self.request_new_nonce()?;
@@ -279,15 +250,14 @@ impl AcmeClient {
 
 
 		let mut res = self.client.post(uri)
-			.header(Self::content_type())
+			.header(Self::jose_json_content_type())
 			.body(&jws[..])
 			.send()?;
 
 		match *res.status() {
 			StatusCode::BadRequest => {
-				let mut res_content = String::new();
-				res.read_to_string(&mut res_content)?;
-				return Err(AcmeServerError(from_str(&res_content)?).into())
+				let body = response_to_string(&mut res)?;
+				return Err(AcmeServerError(from_str(&body)?).into())
 			}
 
 			_ => {}
@@ -297,7 +267,7 @@ impl AcmeClient {
 	}
 
 	
-	fn content_type() -> reqwest::header::ContentType {
+	fn jose_json_content_type() -> reqwest::header::ContentType {
 		use reqwest::{header::ContentType, mime::Mime};
 		use std::str::FromStr;
 		let mime_type = Mime::from_str("application/jose+json").unwrap();
@@ -317,32 +287,39 @@ fn format_jws(nonce: &str, url: &str, pkey: &PKey<openssl::pkey::Private>, kid: 
 
 	let mut data: HashMap<String, Value> = HashMap::new();
 
-	// header: 'alg': 'RS256', 'jwk': { e, n, kty }
-	let mut header: HashMap<String, Value> = HashMap::new();
-	header.insert("alg".to_owned(), to_value("RS256")?);
-	header.insert("url".to_owned(), url.into());
-	header.insert("nonce".to_owned(), to_value(nonce)?);
-
-	if let Some(kid) = kid {
-		header.insert("kid".to_owned(), kid.into());
+	let header = if let Some(kid) = kid {
+		json!({
+			"alg": "RS256",
+			"url": url,
+			"nonce": nonce,
+			"kid": kid,
+		})
 	} else {
-		header.insert("jwk".to_owned(), jwk(pkey)?);
-	}
+		json!({
+			"alg": "RS256",
+			"url": url,
+			"nonce": nonce,
+			"jwk": jwk(pkey)?,
+		})
+	};
 
 	// protected: base64 of header + nonce
 	let protected64 = b64(&to_string(&header)?.into_bytes());
-	data.insert("protected".to_owned(), to_value(&protected64)?);
 
 	// payload: b64 of payload
-	// let payload = to_string(&payload)?;
 	let payload64 = b64(&payload.as_bytes());
-	data.insert("payload".to_owned(), to_value(&payload64)?);
 
 	// signature: b64 of hash of signature of {proctected64}.{payload64}
-	data.insert("signature".to_owned(), {
+	let signature = {
 		let mut signer = Signer::new(MessageDigest::sha256(), &pkey)?;
 		signer.update(&format!("{}.{}", protected64, payload64).into_bytes())?;
-		to_value(b64(&signer.sign_to_vec()?))?
+		b64(&signer.sign_to_vec()?)
+	};
+
+	let data = json!({
+		"protected": protected64,
+		"payload": payload64,
+		"signature": signature,
 	});
 
 	Ok(to_string(&data)?)
@@ -359,6 +336,15 @@ fn jwk(pkey: &PKey<openssl::pkey::Private>) -> Result<Value> {
 	jwk.insert("n".to_owned(), b64(&rsa.n().to_vec()));
 	Ok(to_value(jwk)?)
 }
+
+
+
+fn response_to_string(response: &mut reqwest::Response) -> Result<String> {
+	let mut res_content = String::new();
+	response.read_to_string(&mut res_content)?;
+	Ok(res_content)
+}
+
 
 
 // header! is making a public struct,

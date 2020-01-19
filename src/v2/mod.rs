@@ -263,7 +263,7 @@
 //!
 //! ## References
 //!
-//! * [IETF ACME draft](https://tools.ietf.org/html/draft-ietf-acme-acme-05)
+//! * [IETF ACME RFC](https://tools.ietf.org/html/rfc8555)
 //! * [Let's Encrypt ACME divergences](https://github.com/letsencrypt/boulder/blob/9c1e8e6764c1de195db6467057e0d148608e411d/docs/acme-divergences.md)
 
 // use self::error::*;
