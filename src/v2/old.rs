@@ -16,24 +16,6 @@ pub struct SignedCertificate {
 }
 
 
-/// Identifier authorization object.
-pub struct Authorization<'a>(Vec<Challenge<'a>>);
-
-
-/// A verification challenge.
-pub struct Challenge<'a> {
-    account: &'a Account,
-    /// Type of verification challenge. Usually `http-01`, `dns-01` for letsencrypt.
-    ctype: String,
-    /// URL to trigger challenge.
-    url: String,
-    /// Challenge token.
-    token: String,
-    /// Key authorization.
-    key_authorization: String,
-}
-
-
 
 impl<'a> CertificateSigner<'a> {
     /// Set PKey of CSR
@@ -221,37 +203,6 @@ impl SignedCertificate {
         &self.pkey
     }
 }
-
-
-impl<'a> Authorization<'a> {
-    /// Gets a challenge.
-    ///
-    /// Pattern is used in `starts_with` for type comparison.
-    pub fn get_challenge(&self, pattern: &str) -> Option<&Challenge> {
-        for challenge in &self.0 {
-            if challenge.ctype().starts_with(pattern) {
-                return Some(challenge);
-            }
-        }
-        None
-    }
-
-    /// Gets http challenge
-    pub fn get_http_challenge(&self) -> Option<&Challenge> {
-        self.get_challenge("http")
-    }
-
-    /// Gets dns challenge
-    pub fn get_dns_challenge(&self) -> Option<&Challenge> {
-        self.get_challenge("dns")
-    }
-
-    /// Gets tls-sni challenge
-    pub fn get_tls_sni_challenge(&self) -> Option<&Challenge> {
-        self.get_challenge("tls-sni")
-    }
-}
-
 
 impl<'a> Challenge<'a> {
     /// Saves key authorization into `{path}/.well-known/acme-challenge/{token}` for http challenge.

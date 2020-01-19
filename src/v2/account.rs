@@ -1,15 +1,10 @@
 
 use crate::v2::error::*;
-use crate::v2::helper::*;
-// use crate::v2::{Directory, Order};
 
-use std::collections::HashMap;
 use std::fs::File;
 use std::path::Path;
-use std::io::{Read, Write};
+use std::io::Write;
 
-use reqwest::StatusCode;
-use openssl::x509::X509;
 use openssl::pkey::PKey;
 
 /// Registered account object.
@@ -19,7 +14,6 @@ use openssl::pkey::PKey;
 ///
 /// See [AccountRegistration](struct.AccountRegistration.html) helper for more details.
 pub struct Account {
-    // pub(crate) directory: Directory,
     pub(crate) pkey: PKey<openssl::pkey::Private>,
     pub(crate) key_id: String,
 }

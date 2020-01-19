@@ -1,16 +1,15 @@
 
 use crate::error::*;
-use crate::{AccountRegistration, Account, Order};
-use serde_json::{to_value, to_string, from_str, Value, json};
-use serde::Serialize;
+use crate::types::*;
+use crate::{AccountRegistration, Account};
+use serde_json::{to_value, from_value, to_string, from_str, Value, json};
+// use serde::{Serialize, Deserialize};
 use openssl::pkey::PKey;
 use reqwest::StatusCode;
 
 
 use std::io::Read;
 use std::collections::HashMap;
-
-pub struct Challenge {}
 
 
 pub struct AcmeClient {
@@ -103,9 +102,9 @@ impl AcmeClient {
 		let pkey = registration.pkey.unwrap_or(gen_key()?);
 
 		let (status, mut response) = {
-			let mut json = to_string(&payload)?;
-
 			let nonce = self.request_new_nonce()?;
+			let json = to_string(&payload)?;
+
 			let jws = format_jws(&nonce, &self.new_account_uri, &pkey, None, &json)?;
 
 			let res = self.client.post(&self.new_account_uri)
@@ -156,85 +155,18 @@ impl AcmeClient {
 			return Err(AcmeServerError(body).into());
 		}
 
-		let object = body.as_object().ok_or_else(|| "Malformed response to newOrder request".to_err())?;
-
-		let authorizations = object.get("authorizations")
-			.and_then(|val| val.as_array())
-			.ok_or_else(|| "newOrder response is malformed or missing 'authorizations'".to_err())?
-			.iter()
-			.filter_map(|val| val.as_str().map(Into::into))
-			.collect();
-
-		let finalize_uri = object.get("finalize")
-			.and_then(|val| val.as_str())
-			.map(Into::into)
-			.ok_or_else(|| "newOrder response is missing 'finalize' entry".to_err())?;
-
-		Ok(Order {
-			authorizations,
-			finalize_uri
-		})
+		let order: Order = from_value(body)?;
+		Ok(order)
 	}
 
 
 	pub fn fetch_challenges(&self, account: &Account, authorization_uri: &str) -> Result<Vec<Challenge>> {
-		use crate::helper::*;
-		use openssl::hash::{hash, MessageDigest};
-
 		let mut response = self.get_with_account(authorization_uri, &account)?;
 
 		let body = response_to_string(&mut response)?;
-		let response_json: HashMap<String, Value> = from_str(&body)?;
+		let challenges: ChallengeListResponse = from_str(&body)?;
 		
-		// let mut challenges = Vec::new();
-		for challenge in response_json.get("challenges")
-				.and_then(|c| c.as_array())
-				.ok_or_else(|| "No challenge found".to_err())? {
-
-			let obj = challenge.as_object()
-				.ok_or_else(|| "Challenge object not found".to_err())?;
-
-			info!("{:?}", obj);
-
-			// let ctype = obj.get("type")
-			// 	.and_then(|t| t.as_str())
-			// 	.ok_or_else(|| "Challenge type not found".to_err())?
-			// 	.to_owned();
-			// let uri = obj.get("uri")
-			// 	.and_then(|t| t.as_str())
-			// 	.ok_or_else(|| "URI not found".to_err())?
-			// 	.to_owned();
-			// let token = obj.get("token")
-			// 	.and_then(|t| t.as_str())
-			// 	.ok_or_else(|| "Token not found".to_err())?
-			// 	.to_owned();
-
-			// This seems really cryptic but it's not
-			// https://tools.ietf.org/html/draft-ietf-acme-acme-05#section-7.1
-			// key-authz = token || '.' || base64url(JWK\_Thumbprint(accountKey))
-			// let key_authorization = format!("{}.{}",
-			// 								token,
-			// 								b64(&hash(MessageDigest::sha256(),
-			// 										   &to_string(&jwk(&account.pkey)?)?
-			// 													.into_bytes())?));
-
-			// info!("{:?}", obj);
-			// info!("{:?}", ctype);
-			// info!("{:?}", uri);
-			// info!("{:?}", token);
-			// info!("{:?}", key_authorization);
-
-			// let challenge = Challenge {
-			// 	account: self,
-			// 	ctype: ctype,
-			// 	url: uri,
-			// 	token: token,
-			// 	key_authorization: key_authorization,
-			// };
-			// challenges.push(challenge);
-		}
-
-		Ok(Vec::new())
+		Ok(challenges.challenges)
 	}
 
 
@@ -247,7 +179,6 @@ impl AcmeClient {
 
 		let nonce = self.request_new_nonce()?;
 		let jws = format_jws(&nonce, uri, &acct.pkey, Some(&acct.key_id), payload)?;
-
 
 		let mut res = self.client.post(uri)
 			.header(Self::jose_json_content_type())
@@ -281,11 +212,9 @@ impl AcmeClient {
 /// Makes a Flattened JSON Web Signature from payload
 fn format_jws(nonce: &str, url: &str, pkey: &PKey<openssl::pkey::Private>, kid: Option<&str>, payload: &str) -> Result<String> {
 	use openssl::sign::Signer;
-	use openssl::hash::{hash, MessageDigest};
+	use openssl::hash::MessageDigest;
 
 	use crate::helper::*;
-
-	let mut data: HashMap<String, Value> = HashMap::new();
 
 	let header = if let Some(kid) = kid {
 		json!({
@@ -330,11 +259,13 @@ fn jwk(pkey: &PKey<openssl::pkey::Private>) -> Result<Value> {
 	use crate::helper::*;
 
 	let rsa = pkey.rsa()?;
-	let mut jwk: HashMap<String, String> = HashMap::new();
-	jwk.insert("e".to_owned(), b64(&rsa.e().to_vec()));
-	jwk.insert("kty".to_owned(), "RSA".to_owned());
-	jwk.insert("n".to_owned(), b64(&rsa.n().to_vec()));
-	Ok(to_value(jwk)?)
+	let jwk = json!({
+		"e": b64(&rsa.e().to_vec()),
+		"kty": "RSA",
+		"n": b64(&rsa.n().to_vec()),
+	});
+
+	Ok(jwk)
 }
 
 

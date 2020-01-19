@@ -1,16 +1,63 @@
-use crate::v2::error::*;
-use crate::v2::helper::*;
+use crate::error::*;
+use crate::helper::*;
 
+// use serde::{Serialize, Deserialize};
 use openssl::pkey::PKey;
 use std::path::Path;
 
-/// Helper to register an account.
+
+
+
+
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct Order {
+    pub authorizations: Vec<String>,
+    
+    #[serde(rename="finalize")]
+    pub finalize_uri: String,
+}
+
+
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Identifier {
+    #[serde(rename="type")]
+    pub identifier_type: String,
+
+    #[serde(rename="value")]
+    pub uri: String,
+}
+
+
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct ChallengeListResponse {
+    pub status: String,
+    pub expires: String,
+    pub identifier: Identifier,
+    pub challenges: Vec<Challenge>,
+}
+
+
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct Challenge {
+    #[serde(rename="type")]
+    pub challenge_type: String,
+    pub url: String,
+    pub token: String,
+}
+
+
+
+
+/// Options for registering an account
 #[derive(Default)]
 pub struct AccountRegistration {
     pub(crate) pkey: Option<PKey<openssl::pkey::Private>>,
     pub(crate) email: Option<String>,
     pub(crate) contact: Option<Vec<String>>,
-    pub(crate) agreement: Option<String>,
 }
 
 
@@ -18,7 +65,6 @@ impl AccountRegistration {
     pub fn new() -> Self {
         Default::default()
     }
-
 
     /// Sets contact email address
     pub fn email(mut self, email: &str) -> AccountRegistration {
@@ -29,14 +75,6 @@ impl AccountRegistration {
     /// Sets contact details such as telephone number (Let's Encrypt only supports email address).
     pub fn contact(mut self, contact: &[&str]) -> AccountRegistration {
         self.contact = Some(contact.iter().map(|c| c.to_string()).collect());
-        self
-    }
-
-    /// Sets agreement url,
-    /// [`LETSENCRYPT_AGREEMENT_URL`](constant.LETSENCRYPT_AGREEMENT_URL.html)
-    /// will be used during registration if it's not set.
-    pub fn agreement(mut self, url: &str) -> AccountRegistration {
-        self.agreement = Some(url.to_owned());
         self
     }
 
