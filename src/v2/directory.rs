@@ -87,14 +87,15 @@ impl Directory {
     ///
     /// This function will try to look for `newNonce` key in directory if it doesn't exists
     /// it will try to get nonce header from directory url.
-    pub(crate) fn get_nonce(&self) -> Result<String> {
-        let url = self.url_for("newNonce").unwrap_or(&self.url);
-        let client = Client::new()?;
-        let res = client.get(url).send()?;
-        res.headers()
-            .get::<hyperx::ReplayNonce>()
-            .ok_or("Replay-Nonce header not found".to_err())
-            .and_then(|nonce| Ok(nonce.as_str().to_string()))
+    pub(crate) fn request_new_nonce(&self) -> Result<String> {
+        // let url = self.url_for("newNonce").unwrap_or(&self.url);
+        // let client = Client::new()?;
+        // let res = client.get(url).send()?;
+        // res.headers()
+        //     .get::<hyperx::ReplayNonce>()
+        //     .ok_or("Replay-Nonce header not found".to_err())
+        //     .and_then(|nonce| Ok(nonce.as_str().to_string()))
+        Ok(String::new())
     }
 
     /// Makes a new post request to directory, signs payload with pkey.
@@ -190,7 +191,7 @@ impl Directory {
 
     /// Makes a Flattened JSON Web Signature from payload
     pub(crate) fn jws<T: Serialize>(&self, pkey: &PKey<openssl::pkey::Private>, payload: T, url: &str, kid: Option<&str>) -> Result<String> {
-        let nonce = self.get_nonce()?;
+        let nonce = self.request_new_nonce()?;
         let mut data: HashMap<String, Value> = HashMap::new();
 
         // header: 'alg': 'RS256', 'jwk': { e, n, kty }
@@ -203,7 +204,7 @@ impl Directory {
         } else {
             header.insert("jwk".to_owned(), self.jwk(pkey)?);
         }
-        
+
         // protected: base64 of header + nonce
         header.insert("nonce".to_owned(), to_value(nonce)?);
         let protected64 = b64(&to_string(&header)?.into_bytes());

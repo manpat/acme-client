@@ -1,8 +1,7 @@
 
 use crate::v2::error::*;
 use crate::v2::helper::*;
-use crate::v2::Directory;
-use crate::v2::{Authorization, Challenge, CertificateSigner};
+// use crate::v2::{Directory, Order};
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -10,10 +9,8 @@ use std::path::Path;
 use std::io::{Read, Write};
 
 use reqwest::StatusCode;
-use openssl::hash::{hash, MessageDigest};
 use openssl::x509::X509;
 use openssl::pkey::PKey;
-use serde_json::{to_string, to_value};
 
 /// Registered account object.
 ///
@@ -22,98 +19,50 @@ use serde_json::{to_string, to_value};
 ///
 /// See [AccountRegistration](struct.AccountRegistration.html) helper for more details.
 pub struct Account {
-    pub(crate) directory: Directory,
+    // pub(crate) directory: Directory,
     pub(crate) pkey: PKey<openssl::pkey::Private>,
     pub(crate) key_id: String,
 }
 
 
-pub struct Order();
-
 impl Account {
-    /// Creates a new identifier authorization object for domain
-    pub fn authorization<'a>(&'a self, domain: &str) -> Result<Authorization<'a>> {
-        info!("Sending identifier authorization request for {}", domain);
+    /// Creates a new order for `domain`
+    // pub fn order(&self, domain: &str) -> Result<Order> {
+    //     info!("Sending new order request for {}", domain);
 
-        let mut map = HashMap::new();
-        map.insert("identifier".to_owned(), {
-            let mut map = HashMap::new();
-            map.insert("type".to_owned(), "dns".to_owned());
-            map.insert("value".to_owned(), domain.to_owned());
-            map
-        });
+    //     let mut map = HashMap::new();
+    //     map.insert("identifiers".to_owned(), {
+    //         let mut map = HashMap::new();
+    //         map.insert("type".to_owned(), "dns".to_owned());
+    //         map.insert("value".to_owned(), domain.to_owned());
+    //         vec![map]
+    //     });
 
-        let (status, body, _) = self.directory().request(self.pkey(), "newAuthz", map, &self.key_id)?;
+    //     let (http_status, body, _) = self.directory().request(self.pkey(), "newOrder", map, &self.key_id)?;
 
-        if status != StatusCode::Created {
-            return Err(AcmeServerError(body).into());
-        }
+    //     if http_status != StatusCode::Created {
+    //         return Err(AcmeServerError(body).into());
+    //     }
 
-        let mut challenges = Vec::new();
-        for challenge in body.as_object()
-                .and_then(|obj| obj.get("challenges"))
-                .and_then(|c| c.as_array())
-                .ok_or_else(|| "No challenge found".to_err())? {
+    //     let object = body.as_object().ok_or_else(|| "Malformed response to newOrder request".to_err())?;
 
-            let obj = challenge
-                .as_object()
-                .ok_or_else(|| "Challenge object not found".to_err())?;
+    //     let authorizations = object.get("authorizations")
+    //     	.and_then(|val| val.as_array())
+    //     	.ok_or_else(|| "newOrder response is malformed or missing 'authorizations'".to_err())?
+    //     	.iter()
+    //     	.filter_map(|val| val.as_str().map(Into::into))
+    //     	.collect();
 
-            let ctype = obj.get("type")
-                .and_then(|t| t.as_str())
-                .ok_or_else(|| "Challenge type not found".to_err())?
-                .to_owned();
-            let uri = obj.get("uri")
-                .and_then(|t| t.as_str())
-                .ok_or_else(|| "URI not found".to_err())?
-                .to_owned();
-            let token = obj.get("token")
-                .and_then(|t| t.as_str())
-                .ok_or_else(|| "Token not found".to_err())?
-                .to_owned();
+    //     let finalize_uri = object.get("finalize")
+    //     	.and_then(|val| val.as_str())
+    //     	.map(Into::into)
+    //     	.ok_or_else(|| "newOrder response is missing 'finalize' entry".to_err())?;
 
-            // This seems really cryptic but it's not
-            // https://tools.ietf.org/html/draft-ietf-acme-acme-05#section-7.1
-            // key-authz = token || '.' || base64url(JWK\_Thumbprint(accountKey))
-            let key_authorization = format!("{}.{}",
-                                            token,
-                                            b64(&hash(MessageDigest::sha256(),
-                                                       &to_string(&self.directory()
-                                                                       .jwk(self.pkey())?)?
-                                                                .into_bytes())?));
-
-            let challenge = Challenge {
-                account: self,
-                ctype: ctype,
-                url: uri,
-                token: token,
-                key_authorization: key_authorization,
-            };
-            challenges.push(challenge);
-        }
-
-        Ok(Authorization(challenges))
-    }
-
-    pub fn order(&self, domain: &str) -> Result<Order> {
-        info!("Sending new order request for {}", domain);
-
-        let mut map = HashMap::new();
-        map.insert("identifiers".to_owned(), {
-            let mut map = HashMap::new();
-            map.insert("type".to_owned(), "dns".to_owned());
-            map.insert("value".to_owned(), domain.to_owned());
-            vec![map]
-        });
-
-        let (status, body, _) = self.directory().request(self.pkey(), "newOrder", map, &self.key_id)?;
-
-        if status != StatusCode::Created {
-            return Err(AcmeServerError(body).into());
-        }
-
-        Ok(Order())
-    }
+    //     Ok(Order {
+    //     	authorizations,
+    //     	finalize_uri
+    //     })
+    // }
 
     /// Creates a new `CertificateSigner` helper to sign a certificate for list of domains.
     ///
@@ -122,45 +71,45 @@ impl Account {
     ///
     /// You can additionally use your own private key and CSR.
     /// See [`CertificateSigner`](struct.CertificateSigner.html) for details.
-    pub fn certificate_signer<'a>(&'a self, domains: &'a [&'a str]) -> CertificateSigner<'a> {
-        CertificateSigner {
-            account: self,
-            domains: domains,
-            pkey: None,
-            csr: None,
-        }
-    }
+    // pub fn certificate_signer<'a>(&'a self, domains: &'a [&'a str]) -> CertificateSigner<'a> {
+    //     CertificateSigner {
+    //         account: self,
+    //         domains: domains,
+    //         pkey: None,
+    //         csr: None,
+    //     }
+    // }
 
     /// Revokes a signed certificate from pem formatted file
-    pub fn revoke_certificate_from_file<P: AsRef<Path>>(&self, path: P) -> Result<()> {
-        let content = {
-            let mut file = File::open(path)?;
-            let mut content = Vec::new();
-            file.read_to_end(&mut content)?;
-            content
-        };
-        let cert = X509::from_pem(&content)?;
-        self.revoke_certificate(&cert)
-    }
+    // pub fn revoke_certificate_from_file<P: AsRef<Path>>(&self, path: P) -> Result<()> {
+    //     let content = {
+    //         let mut file = File::open(path)?;
+    //         let mut content = Vec::new();
+    //         file.read_to_end(&mut content)?;
+    //         content
+    //     };
+    //     let cert = X509::from_pem(&content)?;
+    //     self.revoke_certificate(&cert)
+    // }
 
     /// Revokes a signed certificate
-    pub fn revoke_certificate(&self, cert: &X509) -> Result<()> {
-        let (status, body, _) = {
-            let mut map = HashMap::new();
-            map.insert("certificate".to_owned(), b64(&cert.to_der()?));
+    // pub fn revoke_certificate(&self, cert: &X509) -> Result<()> {
+    //     let (status, body, _) = {
+    //         let mut map = HashMap::new();
+    //         map.insert("certificate".to_owned(), b64(&cert.to_der()?));
 
-            self.directory()
-                .request_unauthorized(self.pkey(), "revoke-cert", map)?
-        };
+    //         self.directory()
+    //             .request(self.pkey(), "revokeCert", map, &self.key_id)?
+    //     };
 
-        match status {
-            StatusCode::Ok => info!("Certificate successfully revoked"),
-            StatusCode::Conflict => warn!("Certificate already revoked"),
-            _ => return Err(AcmeServerError(body).into()),
-        }
+    //     match status {
+    //         StatusCode::Ok => info!("Certificate successfully revoked"),
+    //         StatusCode::Conflict => warn!("Certificate already revoked"),
+    //         _ => return Err(AcmeServerError(body).into()),
+    //     }
 
-        Ok(())
-    }
+    //     Ok(())
+    // }
 
     /// Writes account private key to a writer
     pub fn write_private_key<W: Write>(&self, writer: &mut W) -> Result<()> {
@@ -178,8 +127,8 @@ impl Account {
         &self.pkey
     }
 
-    /// Returns a reference to directory used to create account
-    pub fn directory(&self) -> &Directory {
-        &self.directory
-    }
+    // /// Returns a reference to directory used to create account
+    // pub fn directory(&self) -> &Directory {
+    //     &self.directory
+    // }
 }

@@ -4,13 +4,20 @@ use acme_client::*;
 
 fn main() -> acme_client::error::Result<()> {
 	env_logger::init()?;
-	log::set_max_level(log::LevelFilter::Trace);
 
-	let directory = Directory::lets_encrypt_staging()?;
+	let client = AcmeClient::lets_encrypt_staging()?;
 
-	let account = directory.account_registration().register()?;
+	let account = client.register_account(AccountRegistration::new())?;
+	let order = client.submit_order(&account, "testing.join-the-cool.club")?;
 
-	let auth = account.order("patrick-is.cool")?;
+	println!("{:?}", order);
+
+	for authorization in order.authorizations.iter() {
+		let challenges = client.fetch_challenges(&account, &authorization)?;
+		// println!("{:?}", challenges);
+	}
+
+	// let order = account.order("testing.join-the-cool.club")?;
 
 	Ok(())
 }
