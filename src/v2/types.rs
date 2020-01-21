@@ -7,17 +7,36 @@ use std::path::Path;
 
 
 
+#[derive(Debug, Clone, Copy)]
+pub enum AcmeStatus {
+    Pending,
+    Processing,
+    Invalid,
+    Valid,
+}
 
 
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct Order {
-    pub authorizations: Vec<String>,
+    pub authorizations: Vec<AuthorizationUri>,
     
     #[serde(rename="finalize")]
     pub finalize_uri: String,
 }
 
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct AuthorizationUri(pub String);
+
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct Authorization {
+    pub status: AcmeStatus,
+    pub expires: String,
+    pub identifier: Identifier,
+    pub challenges: Vec<Challenge>,
+}
 
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -30,19 +49,10 @@ pub struct Identifier {
 }
 
 
-
-#[derive(Deserialize, Debug, Clone)]
-pub struct ChallengeListResponse {
-    pub status: String,
-    pub expires: String,
-    pub identifier: Identifier,
-    pub challenges: Vec<Challenge>,
-}
-
-
-
 #[derive(Deserialize, Debug, Clone)]
 pub struct Challenge {
+    pub status: Option<AcmeStatus>,
+
     #[serde(rename="type")]
     pub challenge_type: String,
     pub url: String,
@@ -91,3 +101,19 @@ impl AccountRegistration {
     }
 }
 
+
+
+impl<'de> serde::Deserialize<'de> for AcmeStatus {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error> where D: serde::Deserializer<'de>
+    {
+        let s = String::deserialize(deserializer)?;
+        match s.as_str() {
+            "pending" => Ok(AcmeStatus::Pending),
+            "processing" => Ok(AcmeStatus::Processing),
+            "invalid" => Ok(AcmeStatus::Invalid),
+            "valid" => Ok(AcmeStatus::Valid),
+            // _ => AcmeStatus::Other(s),
+            _ => unimplemented!()
+        }
+    }
+}

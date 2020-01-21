@@ -116,8 +116,8 @@ impl AcmeClient {
 		};
 
 		match status {
-			StatusCode::Ok | StatusCode::Created => debug!("User successfully registered"),
-			StatusCode::Conflict => debug!("User already registered"),
+			StatusCode::Ok | StatusCode::Created => info!("User successfully registered"),
+			StatusCode::Conflict => info!("User already registered"),
 			_ => {
 				let mut res_content = String::new();
 				response.read_to_string(&mut res_content)?;
@@ -160,13 +160,31 @@ impl AcmeClient {
 	}
 
 
-	pub fn fetch_challenges(&self, account: &Account, authorization_uri: &str) -> Result<Vec<Challenge>> {
-		let mut response = self.get_with_account(authorization_uri, &account)?;
+	pub fn fetch_authorization_status(&self, account: &Account, authorization: &AuthorizationUri) -> Result<AcmeStatus> {
+		let mut response = self.get_with_account(&authorization.0, &account)?;
+		let body = response_to_string(&mut response)?;
+		info!("fetch_authorization_status {}", body);
+		let authorization: Authorization = from_str(&body)?;
+		Ok(authorization.status)
+	}
+
+
+	pub fn fetch_challenges(&self, account: &Account, authorization: &AuthorizationUri) -> Result<Authorization> {
+		let mut response = self.get_with_account(&authorization.0, &account)?;
 
 		let body = response_to_string(&mut response)?;
-		let challenges: ChallengeListResponse = from_str(&body)?;
+		let authorization: Authorization = from_str(&body)?;
 		
-		Ok(challenges.challenges)
+		Ok(authorization)
+	}
+
+
+	pub fn signal_challenge_ready(&self, account: &Account, challenge: &Challenge) -> Result<()> {
+		let mut response = self.post_with_account(&challenge.url, &account, "{}")?;
+		let body = response_to_string(&mut response)?;
+		info!("signal_challenge_ready {}", body);
+
+		Ok(())
 	}
 
 
@@ -175,8 +193,6 @@ impl AcmeClient {
 	}
 
 	fn post_with_account(&self, uri: &str, acct: &Account, payload: &str) -> Result<reqwest::Response> {
-		info!("{:?}", payload);
-
 		let nonce = self.request_new_nonce()?;
 		let jws = format_jws(&nonce, uri, &acct.pkey, Some(&acct.key_id), payload)?;
 
@@ -255,7 +271,7 @@ fn format_jws(nonce: &str, url: &str, pkey: &PKey<openssl::pkey::Private>, kid: 
 }
 
 /// Returns jwk field of jws header
-fn jwk(pkey: &PKey<openssl::pkey::Private>) -> Result<Value> {
+pub(crate) fn jwk(pkey: &PKey<openssl::pkey::Private>) -> Result<Value> {
 	use crate::helper::*;
 
 	let rsa = pkey.rsa()?;

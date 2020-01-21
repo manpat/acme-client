@@ -121,6 +121,28 @@ impl Account {
         &self.pkey
     }
 
+
+    /// Calculate the "key authorization" required to validate a challenge
+    /// This is what should go in the 'provisioned resource'
+    pub fn calculate_key_authorization(&self, challenge: &crate::types::Challenge) -> Result<String> {
+        use serde_json::to_string;
+        use openssl::hash::{hash, MessageDigest};
+
+        let jwk = crate::client::jwk(self.pkey())?;
+        let jwk_bytes = to_string(&jwk)?.into_bytes();
+
+        let jwk_sha = hash(MessageDigest::sha256(), &jwk_bytes)?;
+        let jwk_b64 = crate::helper::b64(&jwk_sha);
+
+        // key-authz = token || '.' || base64url(JWK\_Thumbprint(accountKey))
+        let key_authorization = format!("{}.{}",
+            challenge.token,
+            jwk_b64
+        );
+
+        Ok(key_authorization)
+    }
+
     // /// Returns a reference to directory used to create account
     // pub fn directory(&self) -> &Directory {
     //     &self.directory
