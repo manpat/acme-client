@@ -20,44 +20,6 @@ pub struct Account {
 
 
 impl Account {
-    /// Creates a new order for `domain`
-    // pub fn order(&self, domain: &str) -> Result<Order> {
-    //     info!("Sending new order request for {}", domain);
-
-    //     let mut map = HashMap::new();
-    //     map.insert("identifiers".to_owned(), {
-    //         let mut map = HashMap::new();
-    //         map.insert("type".to_owned(), "dns".to_owned());
-    //         map.insert("value".to_owned(), domain.to_owned());
-    //         vec![map]
-    //     });
-
-    //     let (http_status, body, _) = self.directory().request(self.pkey(), "newOrder", map, &self.key_id)?;
-
-    //     if http_status != StatusCode::Created {
-    //         return Err(AcmeServerError(body).into());
-    //     }
-
-    //     let object = body.as_object().ok_or_else(|| "Malformed response to newOrder request".to_err())?;
-
-    //     let authorizations = object.get("authorizations")
-    //     	.and_then(|val| val.as_array())
-    //     	.ok_or_else(|| "newOrder response is malformed or missing 'authorizations'".to_err())?
-    //     	.iter()
-    //     	.filter_map(|val| val.as_str().map(Into::into))
-    //     	.collect();
-
-    //     let finalize_uri = object.get("finalize")
-    //     	.and_then(|val| val.as_str())
-    //     	.map(Into::into)
-    //     	.ok_or_else(|| "newOrder response is missing 'finalize' entry".to_err())?;
-
-    //     Ok(Order {
-    //     	authorizations,
-    //     	finalize_uri
-    //     })
-    // }
-
     /// Creates a new `CertificateSigner` helper to sign a certificate for list of domains.
     ///
     /// `domains` must be list of the domain names you want to sign a certificate for.
@@ -142,9 +104,4 @@ impl Account {
 
         Ok(key_authorization)
     }
-
-    // /// Returns a reference to directory used to create account
-    // pub fn directory(&self) -> &Directory {
-    //     &self.directory
-    // }
 }

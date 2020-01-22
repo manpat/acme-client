@@ -3,21 +3,31 @@ use crate::error::*;
 use crate::types::*;
 use crate::{AccountRegistration, Account};
 use serde_json::{to_value, from_value, to_string, from_str, Value, json};
-// use serde::{Serialize, Deserialize};
 use openssl::pkey::PKey;
 use reqwest::StatusCode;
 
-
+use std::cell::Cell;
 use std::io::Read;
-use std::collections::HashMap;
+
+
+#[derive(Deserialize)]
+struct Directory {
+	#[serde(rename="newNonce")]
+	new_nonce_uri: String,
+
+	#[serde(rename="newAccount")]
+	new_account_uri: String,
+
+	#[serde(rename="newOrder")]
+	new_order_uri: String,
+}
 
 
 pub struct AcmeClient {
 	client: reqwest::Client,
+	directory: Directory,
 
-	new_nonce_uri: String,
-	new_account_uri: String,
-	new_order_uri: String,
+	nonce: Cell<String>,
 }
 
 impl AcmeClient {
@@ -29,28 +39,13 @@ impl AcmeClient {
 		let mut content = String::new();
 		res.read_to_string(&mut content)?;
 
-		let directory: HashMap<String, serde_json::Value> = serde_json::from_str(&content)?;
-
-		let new_nonce_uri = directory.get("newNonce")
-			.and_then(|v| v.as_str())
-			.map(Into::into)
-			.ok_or_else(|| "Directory missing 'newNonce'".to_err())?;
-
-		let new_account_uri = directory.get("newAccount")
-			.and_then(|v| v.as_str())
-			.map(Into::into)
-			.ok_or_else(|| "Directory missing 'newAccount'".to_err())?;
-
-		let new_order_uri = directory.get("newOrder")
-			.and_then(|v| v.as_str())
-			.map(Into::into)
-			.ok_or_else(|| "Directory missing 'newOrder'".to_err())?;
+		let directory = serde_json::from_str(&content)?;
 
 		Ok(AcmeClient {
 			client,
-			new_nonce_uri,
-			new_account_uri,
-			new_order_uri,
+			directory,
+
+			nonce: Cell::new(String::new()),
 		})
 	}
 
@@ -67,13 +62,16 @@ impl AcmeClient {
 	}
 
 
-	pub fn request_new_nonce(&self) -> Result<String> {
-		let res = self.client.get(&self.new_nonce_uri).send()?;
-		res.headers()
+	fn extract_nonce(&self, response: &reqwest::Response) -> Result<()> {
+		let nonce = response.headers()
 			.get::<hyperx::ReplayNonce>()
-			.ok_or("Replay-Nonce header not found".to_err())
-			.and_then(|nonce| Ok(nonce.as_str().to_string()))
-	}
+			.ok_or("Replay-Nonce header not found".to_err())?
+			.as_str().to_owned();
+
+		self.nonce.set(nonce);
+
+		Ok(())
+	} 
 
 
 	/// Registers an account.
@@ -102,12 +100,15 @@ impl AcmeClient {
 		let pkey = registration.pkey.unwrap_or(gen_key()?);
 
 		let (status, mut response) = {
-			let nonce = self.request_new_nonce()?;
+			// Request a new nonce
+			let res = self.client.get(&self.directory.new_nonce_uri).send()?;
+			self.extract_nonce(&res)?;
+
+			// Request a new account be created
 			let json = to_string(&payload)?;
+			let jws = format_jws(&self.nonce.take(), &self.directory.new_account_uri, &pkey, None, &json)?;
 
-			let jws = format_jws(&nonce, &self.new_account_uri, &pkey, None, &json)?;
-
-			let res = self.client.post(&self.new_account_uri)
+			let res = self.client.post(&self.directory.new_account_uri)
 				.header(Self::jose_json_content_type())
 				.body(&jws[..])
 				.send()?;
@@ -115,12 +116,14 @@ impl AcmeClient {
 			(*res.status(), res)
 		};
 
+		// Store nonce so we can use it in the next request
+		self.extract_nonce(&response)?;
+
 		match status {
 			StatusCode::Ok | StatusCode::Created => info!("User successfully registered"),
 			StatusCode::Conflict => info!("User already registered"),
 			_ => {
-				let mut res_content = String::new();
-				response.read_to_string(&mut res_content)?;
+				let res_content = response_to_string(&mut response)?;
 				return Err(AcmeServerError(from_str(&res_content)?).into())
 			},
 		};
@@ -144,7 +147,7 @@ impl AcmeClient {
 		});
 
 		let (http_status, body) = {
-			let mut res = self.post_with_account(&self.new_order_uri, &account, &to_string(&payload)?)?;
+			let mut res = self.post_with_account(&self.directory.new_order_uri, &account, &to_string(&payload)?)?;
 			let body = response_to_string(&mut res)?;
 			let res_json = from_str(&body)?;
 
@@ -160,16 +163,7 @@ impl AcmeClient {
 	}
 
 
-	pub fn fetch_authorization_status(&self, account: &Account, authorization: &AuthorizationUri) -> Result<AcmeStatus> {
-		let mut response = self.get_with_account(&authorization.0, &account)?;
-		let body = response_to_string(&mut response)?;
-		info!("fetch_authorization_status {}", body);
-		let authorization: Authorization = from_str(&body)?;
-		Ok(authorization.status)
-	}
-
-
-	pub fn fetch_challenges(&self, account: &Account, authorization: &AuthorizationUri) -> Result<Authorization> {
+	pub fn fetch_authorization(&self, account: &Account, authorization: &AuthorizationUri) -> Result<Authorization> {
 		let mut response = self.get_with_account(&authorization.0, &account)?;
 
 		let body = response_to_string(&mut response)?;
@@ -180,11 +174,7 @@ impl AcmeClient {
 
 
 	pub fn signal_challenge_ready(&self, account: &Account, challenge: &Challenge) -> Result<()> {
-		let mut response = self.post_with_account(&challenge.url, &account, "{}")?;
-		let body = response_to_string(&mut response)?;
-		info!("signal_challenge_ready {}", body);
-
-		Ok(())
+		self.post_with_account(&challenge.url, &account, "{}").map(|_| ())
 	}
 
 
@@ -193,24 +183,21 @@ impl AcmeClient {
 	}
 
 	fn post_with_account(&self, uri: &str, acct: &Account, payload: &str) -> Result<reqwest::Response> {
-		let nonce = self.request_new_nonce()?;
-		let jws = format_jws(&nonce, uri, &acct.pkey, Some(&acct.key_id), payload)?;
+		let jws = format_jws(&self.nonce.take(), uri, &acct.pkey, Some(&acct.key_id), payload)?;
 
 		let mut res = self.client.post(uri)
 			.header(Self::jose_json_content_type())
 			.body(&jws[..])
 			.send()?;
 
-		match *res.status() {
-			StatusCode::BadRequest => {
-				let body = response_to_string(&mut res)?;
-				return Err(AcmeServerError(from_str(&body)?).into())
-			}
+		self.extract_nonce(&res)?;
 
-			_ => {}
+		if !res.status().is_success() {
+			let body = response_to_string(&mut res)?;
+			Err(AcmeServerError(from_str(&body)?).into())
+		} else {
+			Ok(res)
 		}
-
-		Ok(res)
 	}
 
 	

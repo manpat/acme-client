@@ -54,7 +54,7 @@ fn main() -> acme_client::error::Result<()> {
 	});
 
 	for authorization_uri in order.authorizations.iter() {
-		let authorization = client.fetch_challenges(&account, &authorization_uri)?;
+		let authorization = client.fetch_authorization(&account, &authorization_uri)?;
 
 		println!("{:?}", authorization);
 
@@ -70,15 +70,16 @@ fn main() -> acme_client::error::Result<()> {
 		client.signal_challenge_ready(&account, &http_challenge)?;
 
 		loop {
-			let status = client.fetch_authorization_status(&account, &authorization_uri)?;
-			println!("STATUS {:?}", status);
+			std::thread::sleep(std::time::Duration::from_millis(1000));
 
-			match status {
+			let authorization = client.fetch_authorization(&account, &authorization_uri)?;
+			println!("STATUS {:?}", authorization);
+
+			match authorization.status {
 				AcmeStatus::Pending => {},
 				_ => break
 			}
 
-			std::thread::sleep(std::time::Duration::from_millis(500));
 		}
 
 		tx.send(Msg::Close)?;
