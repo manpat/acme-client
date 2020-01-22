@@ -3,6 +3,7 @@ use crate::helper::*;
 
 // use serde::{Serialize, Deserialize};
 use openssl::pkey::PKey;
+use openssl::x509::{X509, X509Req};
 use std::path::Path;
 
 
@@ -19,10 +20,16 @@ pub enum AcmeStatus {
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct Order {
+    pub identifiers: Vec<Identifier>,
     pub authorizations: Vec<AuthorizationUri>,
-    
     #[serde(rename="finalize")]
     pub finalize_uri: String,
+
+    pub expires: Option<String>,
+    pub error: Option<String>,
+    
+    #[serde(rename="certificate")]
+    pub certificate_uri: Option<String>,
 }
 
 
@@ -59,6 +66,14 @@ pub struct Challenge {
     pub token: String,
 }
 
+
+/// A signed certificate.
+pub struct SignedCertificate {
+    pub cert: X509,
+    pub intermediate_cert: X509,
+    pub csr: X509Req,
+    pub pkey: PKey<openssl::pkey::Private>,
+}
 
 
 

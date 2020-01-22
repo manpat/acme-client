@@ -85,5 +85,11 @@ fn main() -> acme_client::error::Result<()> {
 		tx.send(Msg::Close)?;
 	}
 
+	let certificate = client.finalize_order(&account, &order)?;
+
+	std::fs::write("cert.pem", certificate.cert.to_pem()?)?;
+	std::fs::write("intermediate_cert.pem", certificate.intermediate_cert.to_pem()?)?;
+	println!("hurrah!");
+
 	Ok(())
 }

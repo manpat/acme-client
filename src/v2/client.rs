@@ -62,18 +62,6 @@ impl AcmeClient {
 	}
 
 
-	fn extract_nonce(&self, response: &reqwest::Response) -> Result<()> {
-		let nonce = response.headers()
-			.get::<hyperx::ReplayNonce>()
-			.ok_or("Replay-Nonce header not found".to_err())?
-			.as_str().to_owned();
-
-		self.nonce.set(nonce);
-
-		Ok(())
-	} 
-
-
 	/// Registers an account.
 	///
 	/// A PKey will be generated if it doesn't exist.
@@ -109,7 +97,7 @@ impl AcmeClient {
 			let jws = format_jws(&self.nonce.take(), &self.directory.new_account_uri, &pkey, None, &json)?;
 
 			let res = self.client.post(&self.directory.new_account_uri)
-				.header(Self::jose_json_content_type())
+				.header(jose_json_content_type())
 				.body(&jws[..])
 				.send()?;
 
@@ -178,6 +166,41 @@ impl AcmeClient {
 	}
 
 
+	pub fn finalize_order(&self, account: &Account, order: &Order) -> Result<SignedCertificate> {
+		use crate::helper::{gen_key, gen_csr, b64};
+		use openssl::x509::X509;
+
+		let domains = order.identifiers.iter()
+			.map(|ident| ident.uri.as_str())
+			.collect::<Vec<_>>();
+
+        let pkey = gen_key()?;
+        let csr = gen_csr(&pkey, &domains)?;
+        let csr_b64 = b64(&csr.to_der()?);
+
+		let payload = to_string(&json!({"csr": csr_b64}))?;
+
+		let mut response = self.post_with_account(&order.finalize_uri, account, &payload)?;
+		let body = response_to_string(&mut response)?;
+
+		let order: Order = from_str(&body)?;
+		println!("{:?}", order);
+
+		let certificate_uri = order.certificate_uri.as_ref()
+			.ok_or_else(|| "Failed to get certificate uri".to_err())?;
+
+		let mut response = self.get_with_account(&certificate_uri, account)?;
+        let mut body = Vec::new();
+        response.read_to_end(&mut body)?;
+        let mut certs = X509::stack_from_pem(&body)?;
+
+        let cert = certs.remove(0);
+        let intermediate_cert = certs.remove(0);
+
+        Ok(SignedCertificate { cert, intermediate_cert, csr, pkey })
+	}
+
+
 	fn get_with_account(&self, uri: &str, acct: &Account) -> Result<reqwest::Response> {
 		self.post_with_account(uri, acct, "")
 	}
@@ -186,7 +209,7 @@ impl AcmeClient {
 		let jws = format_jws(&self.nonce.take(), uri, &acct.pkey, Some(&acct.key_id), payload)?;
 
 		let mut res = self.client.post(uri)
-			.header(Self::jose_json_content_type())
+			.header(jose_json_content_type())
 			.body(&jws[..])
 			.send()?;
 
@@ -200,16 +223,27 @@ impl AcmeClient {
 		}
 	}
 
-	
-	fn jose_json_content_type() -> reqwest::header::ContentType {
-		use reqwest::{header::ContentType, mime::Mime};
-		use std::str::FromStr;
-		let mime_type = Mime::from_str("application/jose+json").unwrap();
-		ContentType(mime_type)
-	}
 
+	fn extract_nonce(&self, response: &reqwest::Response) -> Result<()> {
+		let nonce = response.headers()
+			.get::<hyperx::ReplayNonce>()
+			.ok_or("Replay-Nonce header not found".to_err())?
+			.as_str().to_owned();
+
+		self.nonce.set(nonce);
+
+		Ok(())
+	}
 }
 
+
+
+fn jose_json_content_type() -> reqwest::header::ContentType {
+	use reqwest::{header::ContentType, mime::Mime};
+	use std::str::FromStr;
+	let mime_type = Mime::from_str("application/jose+json").unwrap();
+	ContentType(mime_type)
+}
 
 
 /// Makes a Flattened JSON Web Signature from payload
