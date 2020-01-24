@@ -14,12 +14,22 @@ pub enum AcmeStatus {
     Processing,
     Invalid,
     Valid,
+    Ready,
 }
+
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct OrderUri(pub String);
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct AuthorizationUri(pub String);
 
 
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct Order {
+    pub status: AcmeStatus,
+
     pub identifiers: Vec<Identifier>,
     pub authorizations: Vec<AuthorizationUri>,
     #[serde(rename="finalize")]
@@ -31,10 +41,6 @@ pub struct Order {
     #[serde(rename="certificate")]
     pub certificate_uri: Option<String>,
 }
-
-
-#[derive(Deserialize, Debug, Clone)]
-pub struct AuthorizationUri(pub String);
 
 
 #[derive(Deserialize, Debug, Clone)]
@@ -127,7 +133,7 @@ impl<'de> serde::Deserialize<'de> for AcmeStatus {
             "processing" => Ok(AcmeStatus::Processing),
             "invalid" => Ok(AcmeStatus::Invalid),
             "valid" => Ok(AcmeStatus::Valid),
-            // _ => AcmeStatus::Other(s),
+            "ready" => Ok(AcmeStatus::Ready),
             _ => unimplemented!()
         }
     }

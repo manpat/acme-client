@@ -4,6 +4,7 @@ use crate::types::*;
 use crate::{AccountRegistration, Account};
 use serde_json::{to_value, from_value, to_string, from_str, Value, json};
 use openssl::pkey::PKey;
+use openssl::x509::X509;
 use reqwest::StatusCode;
 
 use std::cell::Cell;
@@ -126,20 +127,27 @@ impl AcmeClient {
 	}
 
 
-	pub fn submit_order(&self, account: &Account, domain: &str) -> Result<Order> {
-		info!("Sending new order request for {}", domain);
+	pub fn submit_order(&self, account: &Account, domains: &[&str]) -> Result<(Order, OrderUri)> {
+		info!("Sending new order request for {:?}", domains);
+
+		let identifiers = domains.iter()
+			.map(|&domain| Identifier {
+				identifier_type: "dns".into(),
+				uri: domain.into()
+			})
+			.collect::<Vec<_>>();
 
 		let payload = json!({
-			"identifiers": [{"type": "dns", "value": domain}],
+			"identifiers": identifiers,
 			"resource": "newOrder"
 		});
 
-		let (http_status, body) = {
+		let (http_status, body, location) = {
 			let mut res = self.post_with_account(&self.directory.new_order_uri, &account, &to_string(&payload)?)?;
 			let body = response_to_string(&mut res)?;
 			let res_json = from_str(&body)?;
 
-			(*res.status(), res_json)
+			(*res.status(), res_json, response_location(&res)?)
 		};
 
 		if http_status != StatusCode::Created {
@@ -147,6 +155,16 @@ impl AcmeClient {
 		}
 
 		let order: Order = from_value(body)?;
+		Ok((order, OrderUri(location)))
+	}
+
+
+	pub fn fetch_order(&self, account: &Account, order: &OrderUri) -> Result<Order> {
+		let mut response = self.get_with_account(&order.0, &account)?;
+
+		let body = response_to_string(&mut response)?;
+		let order: Order = from_str(&body)?;
+		
 		Ok(order)
 	}
 
@@ -161,14 +179,27 @@ impl AcmeClient {
 	}
 
 
+	pub fn fetch_certificate(&self, account: &Account, certificate_uri: &String) -> Result<(X509, X509)> {
+		let mut response = self.get_with_account(&certificate_uri, account)?;
+
+        let mut body = Vec::new();
+        response.read_to_end(&mut body)?;
+        let mut certs = X509::stack_from_pem(&body)?;
+
+        let cert = certs.remove(0);
+        let intermediate_cert = certs.remove(0);
+
+        Ok((cert, intermediate_cert))
+	}
+
+
 	pub fn signal_challenge_ready(&self, account: &Account, challenge: &Challenge) -> Result<()> {
 		self.post_with_account(&challenge.url, &account, "{}").map(|_| ())
 	}
 
 
-	pub fn finalize_order(&self, account: &Account, order: &Order) -> Result<SignedCertificate> {
+	pub fn finalize_order(&self, account: &Account, order: &Order) -> Result<(SignedCertificate, String)> {
 		use crate::helper::{gen_key, gen_csr, b64};
-		use openssl::x509::X509;
 
 		let domains = order.identifiers.iter()
 			.map(|ident| ident.uri.as_str())
@@ -184,20 +215,13 @@ impl AcmeClient {
 		let body = response_to_string(&mut response)?;
 
 		let order: Order = from_str(&body)?;
-		println!("{:?}", order);
 
 		let certificate_uri = order.certificate_uri.as_ref()
 			.ok_or_else(|| "Failed to get certificate uri".to_err())?;
 
-		let mut response = self.get_with_account(&certificate_uri, account)?;
-        let mut body = Vec::new();
-        response.read_to_end(&mut body)?;
-        let mut certs = X509::stack_from_pem(&body)?;
+		let (cert, intermediate_cert) = self.fetch_certificate(account, certificate_uri)?;
 
-        let cert = certs.remove(0);
-        let intermediate_cert = certs.remove(0);
-
-        Ok(SignedCertificate { cert, intermediate_cert, csr, pkey })
+        Ok((SignedCertificate { cert, intermediate_cert, csr, pkey }, certificate_uri.to_owned()))
 	}
 
 
@@ -311,6 +335,13 @@ fn response_to_string(response: &mut reqwest::Response) -> Result<String> {
 	let mut res_content = String::new();
 	response.read_to_string(&mut res_content)?;
 	Ok(res_content)
+}
+
+fn response_location(response: &reqwest::Response) -> Result<String> {
+	let location = response.headers().get::<reqwest::header::Location>()
+		.ok_or_else(|| "Server response to account registration missing Location header".to_err())?;
+	
+	Ok(location.as_str().to_owned())
 }
 
 
