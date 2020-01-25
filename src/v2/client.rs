@@ -1,8 +1,7 @@
 
 use crate::error::*;
 use crate::types::*;
-use crate::{AccountRegistration, Account};
-use serde_json::{to_value, from_value, to_string, from_str, Value, json};
+use serde_json::{from_value, to_string, from_str, Value, json};
 use openssl::pkey::PKey;
 use openssl::x509::X509;
 use reqwest::StatusCode;
@@ -11,123 +10,80 @@ use std::cell::Cell;
 use std::io::Read;
 
 
-#[derive(Deserialize)]
-struct Directory {
-	#[serde(rename="newNonce")]
-	new_nonce_uri: String,
-
-	#[serde(rename="newAccount")]
-	new_account_uri: String,
-
-	#[serde(rename="newOrder")]
-	new_order_uri: String,
-}
-
-
 pub struct AcmeClient {
 	client: reqwest::Client,
 	directory: Directory,
 
 	nonce: Cell<String>,
+    pkey: PKey<openssl::pkey::Private>,
+    account_key_id: String,
 }
 
 impl AcmeClient {
+	/// Creates an `AcmeClient` with a directory from
+	/// [`LETSENCRYPT_DIRECTORY_URL`](constant.LETSENCRYPT_DIRECTORY_URL.html).
+	pub fn lets_encrypt(registration: AccountRegistration) -> Result<Self> {
+		Self::with_directory(crate::LETSENCRYPT_DIRECTORY_URL, registration)
+	}
+
+	/// Creates an `AcmeClient` with a directory from
+	/// [`LETSENCRYPT_STAGING_DIRECTORY_URL`](constant.LETSENCRYPT_STAGING_DIRECTORY_URL.html).
+	pub fn lets_encrypt_staging(registration: AccountRegistration) -> Result<Self> {
+		Self::with_directory(crate::LETSENCRYPT_STAGING_DIRECTORY_URL, registration)
+	}
+
 	/// Creates an `AcmeClient` with a directory retrieved from `directory_url`.
-	pub fn with_directory(directory_url: &str) -> Result<Self> {
+	pub fn with_directory(directory_url: &str, registration: AccountRegistration) -> Result<Self> {
+		use crate::helper::*;
+
 		let client = reqwest::Client::new()?;
 
-		let mut res = client.get(directory_url).send()?;
-		let mut content = String::new();
-		res.read_to_string(&mut content)?;
+		let mut response = client.get(directory_url).send()?;
+		let directory_content = response_to_string(&mut response)?;
+		let directory: Directory = serde_json::from_str(&directory_content)?;
 
-		let directory = serde_json::from_str(&content)?;
+		// Get a nonce for account creation
+		let response = client.get(&directory.new_nonce_uri).send()?;
+		let nonce = response_nonce(&response)?;
+
+		// Request an account
+		let pkey = registration.pkey.unwrap_or(gen_key()?);
+
+		let (nonce, account_key_id) = {
+			let payload = json!({
+				"resource": "newAccount",
+				"termsOfServiceAgreed": true,
+				"contact": registration.contact,
+			});
+
+			let payload_str = to_string(&payload)?;
+			let jws = format_jws(&nonce, &directory.new_account_uri, &pkey, None, &payload_str)?;
+
+			let mut response = client.post(&directory.new_account_uri)
+				.header(jose_json_content_type())
+				.body(&jws[..])
+				.send()?;
+
+			if !response.status().is_success() {
+				let body = response_to_string(&mut response)?;
+				return Err(AcmeServerError(from_str(&body)?).into())
+			}
+
+			(response_nonce(&response)?, response_location(&response)?)
+		};
 
 		Ok(AcmeClient {
 			client,
 			directory,
 
-			nonce: Cell::new(String::new()),
+			nonce: Cell::new(nonce),
+			pkey,
+			account_key_id
 		})
 	}
 
-	/// Creates an `AcmeClient` with a directory from
-	/// [`LETSENCRYPT_DIRECTORY_URL`](constant.LETSENCRYPT_DIRECTORY_URL.html).
-	pub fn lets_encrypt() -> Result<Self> {
-		Self::with_directory(crate::LETSENCRYPT_DIRECTORY_URL)
-	}
 
-	/// Creates an `AcmeClient` with a directory from
-	/// [`LETSENCRYPT_STAGING_DIRECTORY_URL`](constant.LETSENCRYPT_STAGING_DIRECTORY_URL.html).
-	pub fn lets_encrypt_staging() -> Result<Self> {
-		Self::with_directory(crate::LETSENCRYPT_STAGING_DIRECTORY_URL)
-	}
-
-
-	/// Registers an account.
-	///
-	/// A PKey will be generated if it doesn't exist.
-	pub fn register_account(&self, registration: AccountRegistration) -> Result<Account> {
-		use crate::helper::*;
-
-		info!("Registering account");
-
-		let mut contact_info = registration.contact.unwrap_or(Vec::new());
-		if let Some(email) = registration.email {
-			contact_info.push(format!("mailto:{}", email));
-		}
-
-		let mut payload = json!({
-			"resource": "newAccount",
-			"termsOfServiceAgreed": true
-		});
-
-		if !contact_info.is_empty() {
-			payload.as_object_mut().unwrap()
-				.insert("contact".to_owned(), to_value(contact_info)?);
-		}
-
-		let pkey = registration.pkey.unwrap_or(gen_key()?);
-
-		let (status, mut response) = {
-			// Request a new nonce
-			let res = self.client.get(&self.directory.new_nonce_uri).send()?;
-			self.extract_nonce(&res)?;
-
-			// Request a new account be created
-			let json = to_string(&payload)?;
-			let jws = format_jws(&self.nonce.take(), &self.directory.new_account_uri, &pkey, None, &json)?;
-
-			let res = self.client.post(&self.directory.new_account_uri)
-				.header(jose_json_content_type())
-				.body(&jws[..])
-				.send()?;
-
-			(*res.status(), res)
-		};
-
-		// Store nonce so we can use it in the next request
-		self.extract_nonce(&response)?;
-
-		match status {
-			StatusCode::Ok | StatusCode::Created => info!("User successfully registered"),
-			StatusCode::Conflict => info!("User already registered"),
-			_ => {
-				let res_content = response_to_string(&mut response)?;
-				return Err(AcmeServerError(from_str(&res_content)?).into())
-			},
-		};
-
-		let location = response.headers().get::<reqwest::header::Location>()
-			.ok_or_else(|| "Server response to account registration missing Location header".to_err())?;
-
-		Ok(Account {
-		   pkey: pkey,
-		   key_id: location.as_str().to_owned(),
-	   })
-	}
-
-
-	pub fn submit_order(&self, account: &Account, domains: &[&str]) -> Result<(Order, OrderUri)> {
+	pub fn submit_order(&self, domains: &[&str]) -> Result<(Order, OrderUri)> {
 		info!("Sending new order request for {:?}", domains);
 
 		let identifiers = domains.iter()
@@ -143,7 +99,7 @@ impl AcmeClient {
 		});
 
 		let (http_status, body, location) = {
-			let mut res = self.post_with_account(&self.directory.new_order_uri, &account, &to_string(&payload)?)?;
+			let mut res = self.post_with_account(&self.directory.new_order_uri, &to_string(&payload)?)?;
 			let body = response_to_string(&mut res)?;
 			let res_json = from_str(&body)?;
 
@@ -159,8 +115,8 @@ impl AcmeClient {
 	}
 
 
-	pub fn fetch_order(&self, account: &Account, order: &OrderUri) -> Result<Order> {
-		let mut response = self.get_with_account(&order.0, &account)?;
+	pub fn fetch_order(&self, order: &OrderUri) -> Result<Order> {
+		let mut response = self.get_with_account(&order.0)?;
 
 		let body = response_to_string(&mut response)?;
 		let order: Order = from_str(&body)?;
@@ -169,8 +125,8 @@ impl AcmeClient {
 	}
 
 
-	pub fn fetch_authorization(&self, account: &Account, authorization: &AuthorizationUri) -> Result<Authorization> {
-		let mut response = self.get_with_account(&authorization.0, &account)?;
+	pub fn fetch_authorization(&self, authorization: &AuthorizationUri) -> Result<Authorization> {
+		let mut response = self.get_with_account(&authorization.0)?;
 
 		let body = response_to_string(&mut response)?;
 		let authorization: Authorization = from_str(&body)?;
@@ -179,8 +135,8 @@ impl AcmeClient {
 	}
 
 
-	pub fn fetch_certificate(&self, account: &Account, certificate_uri: &String) -> Result<(X509, X509)> {
-		let mut response = self.get_with_account(&certificate_uri, account)?;
+	pub fn fetch_certificate(&self, certificate_uri: &CertificateUri) -> Result<(X509, X509)> {
+		let mut response = self.get_with_account(&certificate_uri.0)?;
 
         let mut body = Vec::new();
         response.read_to_end(&mut body)?;
@@ -193,51 +149,85 @@ impl AcmeClient {
 	}
 
 
-	pub fn signal_challenge_ready(&self, account: &Account, challenge: &Challenge) -> Result<()> {
-		self.post_with_account(&challenge.url, &account, "{}").map(|_| ())
+	pub fn signal_challenge_ready(&self, challenge: &Challenge) -> Result<()> {
+		self.post_with_account(&challenge.url, "{}").map(|_| ())
 	}
 
 
-	pub fn finalize_order(&self, account: &Account, order: &Order) -> Result<(SignedCertificate, String)> {
+	pub fn finalize_order(&self, order: &Order) -> Result<(SignedCertificate, CertificateUri)> {
 		use crate::helper::{gen_key, gen_csr, b64};
 
 		let domains = order.identifiers.iter()
 			.map(|ident| ident.uri.as_str())
 			.collect::<Vec<_>>();
 
+		// Generate a key to sign the certificate request - this key _must_ be different to the key
+		// associated with the account, `self.pkey`
         let pkey = gen_key()?;
         let csr = gen_csr(&pkey, &domains)?;
         let csr_b64 = b64(&csr.to_der()?);
 
 		let payload = to_string(&json!({"csr": csr_b64}))?;
 
-		let mut response = self.post_with_account(&order.finalize_uri, account, &payload)?;
+		let mut response = self.post_with_account(&order.finalize_uri, &payload)?;
 		let body = response_to_string(&mut response)?;
-
 		let order: Order = from_str(&body)?;
 
 		let certificate_uri = order.certificate_uri.as_ref()
 			.ok_or_else(|| "Failed to get certificate uri".to_err())?;
 
-		let (cert, intermediate_cert) = self.fetch_certificate(account, certificate_uri)?;
+		let (cert, intermediate_cert) = self.fetch_certificate(certificate_uri)?;
 
-        Ok((SignedCertificate { cert, intermediate_cert, csr, pkey }, certificate_uri.to_owned()))
+        Ok((SignedCertificate { cert, intermediate_cert, csr, pkey }, certificate_uri.clone()))
 	}
 
+    /// Calculate the "key authorization" required to validate a challenge
+    /// This is what should go in the 'provisioned resource'
+    pub fn calculate_key_authorization(&self, challenge: &crate::types::Challenge) -> Result<String> {
+        use openssl::hash::{hash, MessageDigest};
 
-	fn get_with_account(&self, uri: &str, acct: &Account) -> Result<reqwest::Response> {
-		self.post_with_account(uri, acct, "")
+        let jwk = jwk(&self.pkey)?;
+        let jwk_bytes = to_string(&jwk)?.into_bytes();
+
+        let jwk_sha = hash(MessageDigest::sha256(), &jwk_bytes)?;
+        let jwk_b64 = crate::helper::b64(&jwk_sha);
+
+        // key-authz = token || '.' || base64url(JWK\_Thumbprint(accountKey))
+        let key_authorization = format!("{}.{}",
+            challenge.token,
+            jwk_b64
+        );
+
+        Ok(key_authorization)
+    }
+
+
+    fn take_nonce(&self) -> Result<String> {
+    	let nonce = self.nonce.take();
+
+    	if nonce.is_empty() {
+			// Request a new nonce if none has been stored
+			let res = self.client.get(&self.directory.new_nonce_uri).send()?;
+			response_nonce(&res)
+    	} else {
+	    	Ok(nonce)
+    	}
+    }
+
+	fn get_with_account(&self, uri: &str) -> Result<reqwest::Response> {
+		self.post_with_account(uri, "")
 	}
 
-	fn post_with_account(&self, uri: &str, acct: &Account, payload: &str) -> Result<reqwest::Response> {
-		let jws = format_jws(&self.nonce.take(), uri, &acct.pkey, Some(&acct.key_id), payload)?;
+	fn post_with_account(&self, uri: &str, payload: &str) -> Result<reqwest::Response> {
+		let jws = format_jws(&self.take_nonce()?, uri, &self.pkey, Some(&self.account_key_id), payload)?;
 
 		let mut res = self.client.post(uri)
 			.header(jose_json_content_type())
 			.body(&jws[..])
 			.send()?;
 
-		self.extract_nonce(&res)?;
+		// Store nonce so we can use it in the next request
+		self.nonce.set(response_nonce(&res)?);
 
 		if !res.status().is_success() {
 			let body = response_to_string(&mut res)?;
@@ -246,20 +236,7 @@ impl AcmeClient {
 			Ok(res)
 		}
 	}
-
-
-	fn extract_nonce(&self, response: &reqwest::Response) -> Result<()> {
-		let nonce = response.headers()
-			.get::<hyperx::ReplayNonce>()
-			.ok_or("Replay-Nonce header not found".to_err())?
-			.as_str().to_owned();
-
-		self.nonce.set(nonce);
-
-		Ok(())
-	}
 }
-
 
 
 fn jose_json_content_type() -> reqwest::header::ContentType {
@@ -315,8 +292,9 @@ fn format_jws(nonce: &str, url: &str, pkey: &PKey<openssl::pkey::Private>, kid: 
 	Ok(to_string(&data)?)
 }
 
+
 /// Returns jwk field of jws header
-pub(crate) fn jwk(pkey: &PKey<openssl::pkey::Private>) -> Result<Value> {
+fn jwk(pkey: &PKey<openssl::pkey::Private>) -> Result<Value> {
 	use crate::helper::*;
 
 	let rsa = pkey.rsa()?;
@@ -338,10 +316,19 @@ fn response_to_string(response: &mut reqwest::Response) -> Result<String> {
 }
 
 fn response_location(response: &reqwest::Response) -> Result<String> {
-	let location = response.headers().get::<reqwest::header::Location>()
+	let location = response.headers()
+		.get::<reqwest::header::Location>()
 		.ok_or_else(|| "Server response to account registration missing Location header".to_err())?;
 	
 	Ok(location.as_str().to_owned())
+}
+
+fn response_nonce(response: &reqwest::Response) -> Result<String> {
+	let nonce = response.headers()
+		.get::<hyperx::ReplayNonce>()
+		.ok_or_else(|| "Replay-Nonce header not found".to_err())?;
+
+	Ok(nonce.as_str().to_owned())
 }
 
 

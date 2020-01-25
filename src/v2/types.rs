@@ -24,6 +24,31 @@ pub struct OrderUri(pub String);
 #[derive(Deserialize, Debug, Clone)]
 pub struct AuthorizationUri(pub String);
 
+#[derive(Deserialize, Debug, Clone)]
+pub struct CertificateUri(pub String);
+
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Identifier {
+    #[serde(rename="type")]
+    pub identifier_type: String,
+
+    #[serde(rename="value")]
+    pub uri: String,
+}
+
+
+#[derive(Deserialize)]
+pub struct Directory {
+    #[serde(rename="newNonce")]
+    pub new_nonce_uri: String,
+
+    #[serde(rename="newAccount")]
+    pub new_account_uri: String,
+
+    #[serde(rename="newOrder")]
+    pub new_order_uri: String,
+}
 
 
 #[derive(Deserialize, Debug, Clone)]
@@ -39,7 +64,7 @@ pub struct Order {
     pub error: Option<String>,
     
     #[serde(rename="certificate")]
-    pub certificate_uri: Option<String>,
+    pub certificate_uri: Option<CertificateUri>,
 }
 
 
@@ -49,16 +74,6 @@ pub struct Authorization {
     pub expires: String,
     pub identifier: Identifier,
     pub challenges: Vec<Challenge>,
-}
-
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct Identifier {
-    #[serde(rename="type")]
-    pub identifier_type: String,
-
-    #[serde(rename="value")]
-    pub uri: String,
 }
 
 
@@ -87,7 +102,6 @@ pub struct SignedCertificate {
 #[derive(Default)]
 pub struct AccountRegistration {
     pub(crate) pkey: Option<PKey<openssl::pkey::Private>>,
-    pub(crate) email: Option<String>,
     pub(crate) contact: Option<Vec<String>>,
 }
 
@@ -99,13 +113,17 @@ impl AccountRegistration {
 
     /// Sets contact email address
     pub fn email(mut self, email: &str) -> AccountRegistration {
-        self.email = Some(email.to_owned());
+        self.contact.get_or_insert_with(Vec::new)
+            .push(format!("mailto:{}", email));
+
         self
     }
 
     /// Sets contact details such as telephone number (Let's Encrypt only supports email address).
-    pub fn contact(mut self, contact: &[&str]) -> AccountRegistration {
-        self.contact = Some(contact.iter().map(|c| c.to_string()).collect());
+    pub fn contact(mut self, contact: &str) -> AccountRegistration {
+        self.contact.get_or_insert_with(Vec::new)
+            .push(contact.to_owned());
+
         self
     }
 

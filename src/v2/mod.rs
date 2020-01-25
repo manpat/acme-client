@@ -270,16 +270,8 @@
 
 pub mod types;
 pub mod client;
-// pub mod directory;
-pub mod account;
-// pub mod account_registration;
-// pub mod order;
 
 pub use self::client::AcmeClient;
-// pub use self::directory::Directory;
-pub use self::account::Account;
-// pub use self::account_registration::AccountRegistration;
-// pub use self::order::Order;
 pub use self::types::*;
 
 /// Default Let's Encrypt directory URL to configure client.
