@@ -1,7 +1,5 @@
 use crate::error::*;
-use crate::helper::*;
 
-// use serde::{Serialize, Deserialize};
 use openssl::pkey::PKey;
 use openssl::x509::{X509, X509Req};
 use std::path::Path;
@@ -135,7 +133,10 @@ impl AccountRegistration {
 
     /// Sets PKey from a PEM formatted file.
     pub fn pkey_from_file<P: AsRef<Path>>(mut self, path: P) -> Result<AccountRegistration> {
-        self.pkey = Some(read_pkey(path)?);
+        let content = std::fs::read(path)?;
+        let key = PKey::private_key_from_pem(&content)?;
+        self.pkey = Some(key);
+
         Ok(self)
     }
 }

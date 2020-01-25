@@ -1,7 +1,7 @@
 
 use crate::error::*;
 use crate::types::*;
-use serde_json::{from_value, to_string, from_str, Value, json};
+use serde_json::{to_string, from_str, Value, json};
 use openssl::pkey::PKey;
 use openssl::x509::X509;
 use reqwest::StatusCode;
@@ -34,8 +34,6 @@ impl AcmeClient {
 
 	/// Creates an `AcmeClient` with a directory retrieved from `directory_url`.
 	pub fn with_directory(directory_url: &str, registration: AccountRegistration) -> Result<Self> {
-		use crate::helper::*;
-
 		let client = reqwest::Client::new()?;
 
 		let mut response = client.get(directory_url).send()?;
@@ -66,7 +64,7 @@ impl AcmeClient {
 
 			if !response.status().is_success() {
 				let body = response_to_string(&mut response)?;
-				return Err(AcmeServerError(from_str(&body)?).into())
+				bail!("Acme request failed: {}", body)
 			}
 
 			(response_nonce(&response)?, response_location(&response)?)
@@ -101,16 +99,14 @@ impl AcmeClient {
 		let (http_status, body, location) = {
 			let mut res = self.post_with_account(&self.directory.new_order_uri, &to_string(&payload)?)?;
 			let body = response_to_string(&mut res)?;
-			let res_json = from_str(&body)?;
-
-			(*res.status(), res_json, response_location(&res)?)
+			(*res.status(), body, response_location(&res)?)
 		};
 
 		if http_status != StatusCode::Created {
-			return Err(AcmeServerError(body).into());
+			bail!("Acme request failed: {}", body)
 		}
 
-		let order: Order = from_value(body)?;
+		let order: Order = from_str(&body)?;
 		Ok((order, OrderUri(location)))
 	}
 
@@ -155,8 +151,6 @@ impl AcmeClient {
 
 
 	pub fn finalize_order(&self, order: &Order) -> Result<(SignedCertificate, CertificateUri)> {
-		use crate::helper::{gen_key, gen_csr, b64};
-
 		let domains = order.identifiers.iter()
 			.map(|ident| ident.uri.as_str())
 			.collect::<Vec<_>>();
@@ -165,7 +159,7 @@ impl AcmeClient {
 		// associated with the account, `self.pkey`
         let pkey = gen_key()?;
         let csr = gen_csr(&pkey, &domains)?;
-        let csr_b64 = b64(&csr.to_der()?);
+        let csr_b64 = to_base64(csr.to_der()?);
 
 		let payload = to_string(&json!({"csr": csr_b64}))?;
 
@@ -174,7 +168,7 @@ impl AcmeClient {
 		let order: Order = from_str(&body)?;
 
 		let certificate_uri = order.certificate_uri.as_ref()
-			.ok_or_else(|| "Failed to get certificate uri".to_err())?;
+			.ok_or_else(|| format_err!("Failed to get certificate uri"))?;
 
 		let (cert, intermediate_cert) = self.fetch_certificate(certificate_uri)?;
 
@@ -190,7 +184,7 @@ impl AcmeClient {
         let jwk_bytes = to_string(&jwk)?.into_bytes();
 
         let jwk_sha = hash(MessageDigest::sha256(), &jwk_bytes)?;
-        let jwk_b64 = crate::helper::b64(&jwk_sha);
+        let jwk_b64 = to_base64(jwk_sha);
 
         // key-authz = token || '.' || base64url(JWK\_Thumbprint(accountKey))
         let key_authorization = format!("{}.{}",
@@ -231,10 +225,10 @@ impl AcmeClient {
 
 		if !res.status().is_success() {
 			let body = response_to_string(&mut res)?;
-			Err(AcmeServerError(from_str(&body)?).into())
-		} else {
-			Ok(res)
+			bail!("Acme request failed: {}", body)
 		}
+
+		Ok(res)
 	}
 }
 
@@ -249,11 +243,6 @@ fn jose_json_content_type() -> reqwest::header::ContentType {
 
 /// Makes a Flattened JSON Web Signature from payload
 fn format_jws(nonce: &str, url: &str, pkey: &PKey<openssl::pkey::Private>, kid: Option<&str>, payload: &str) -> Result<String> {
-	use openssl::sign::Signer;
-	use openssl::hash::MessageDigest;
-
-	use crate::helper::*;
-
 	let header = if let Some(kid) = kid {
 		json!({
 			"alg": "RS256",
@@ -271,16 +260,19 @@ fn format_jws(nonce: &str, url: &str, pkey: &PKey<openssl::pkey::Private>, kid: 
 	};
 
 	// protected: base64 of header + nonce
-	let protected64 = b64(&to_string(&header)?.into_bytes());
+	let protected64 = to_base64(to_string(&header)?);
 
 	// payload: b64 of payload
-	let payload64 = b64(&payload.as_bytes());
+	let payload64 = to_base64(payload);
 
 	// signature: b64 of hash of signature of {proctected64}.{payload64}
 	let signature = {
+		use openssl::sign::Signer;
+		use openssl::hash::MessageDigest;
+
 		let mut signer = Signer::new(MessageDigest::sha256(), &pkey)?;
-		signer.update(&format!("{}.{}", protected64, payload64).into_bytes())?;
-		b64(&signer.sign_to_vec()?)
+		signer.update(format!("{}.{}", protected64, payload64).as_bytes())?;
+		to_base64(signer.sign_to_vec()?)
 	};
 
 	let data = json!({
@@ -295,16 +287,68 @@ fn format_jws(nonce: &str, url: &str, pkey: &PKey<openssl::pkey::Private>, kid: 
 
 /// Returns jwk field of jws header
 fn jwk(pkey: &PKey<openssl::pkey::Private>) -> Result<Value> {
-	use crate::helper::*;
-
 	let rsa = pkey.rsa()?;
 	let jwk = json!({
-		"e": b64(&rsa.e().to_vec()),
+		"e": to_base64(rsa.e().to_vec()),
 		"kty": "RSA",
-		"n": b64(&rsa.n().to_vec()),
+		"n": to_base64(rsa.n().to_vec()),
 	});
 
 	Ok(jwk)
+}
+
+/// base64 Encoding with URL and Filename Safe Alphabet.
+fn to_base64<T: AsRef<[u8]>>(data: T) -> String {
+    base64::encode_config(data.as_ref(), base64::URL_SAFE_NO_PAD)
+}
+
+
+fn gen_key() -> Result<PKey<openssl::pkey::Private>> {
+    use openssl::rsa::Rsa;
+
+    let rsa = Rsa::generate(super::BIT_LENGTH)?;
+    let key = PKey::from_rsa(rsa)?;
+    Ok(key)
+}
+
+
+fn gen_csr(pkey: &PKey<openssl::pkey::Private>, domains: &[&str]) -> Result<openssl::x509::X509Req> {
+    use openssl::x509::{X509Req, X509Name};
+    use openssl::x509::extension::SubjectAlternativeName;
+    use openssl::stack::Stack;
+    use openssl::hash::MessageDigest;
+
+    if domains.is_empty() {
+        bail!("You need to supply at least one or more domain names")
+    }
+
+    let mut builder = X509Req::builder()?;
+    let name = {
+        let mut name = X509Name::builder()?;
+        name.append_entry_by_text("CN", domains[0])?;
+        name.build()
+    };
+    builder.set_subject_name(&name)?;
+
+    // if more than one domain name is supplied
+    // add them as SubjectAlternativeName
+    if domains.len() > 1 {
+        let san_extension = {
+            let mut san = SubjectAlternativeName::new();
+            for domain in domains.iter() {
+                san.dns(domain);
+            }
+            san.build(&builder.x509v3_context(None))?
+        };
+        let mut stack = Stack::new()?;
+        stack.push(san_extension)?;
+        builder.add_extensions(&stack)?;
+    }
+
+    builder.set_pubkey(&pkey)?;
+    builder.sign(pkey, MessageDigest::sha256())?;
+
+    Ok(builder.build())
 }
 
 
@@ -318,7 +362,7 @@ fn response_to_string(response: &mut reqwest::Response) -> Result<String> {
 fn response_location(response: &reqwest::Response) -> Result<String> {
 	let location = response.headers()
 		.get::<reqwest::header::Location>()
-		.ok_or_else(|| "Server response to account registration missing Location header".to_err())?;
+		.ok_or_else(|| format_err!("Server response to account registration missing Location header"))?;
 	
 	Ok(location.as_str().to_owned())
 }
@@ -326,7 +370,7 @@ fn response_location(response: &reqwest::Response) -> Result<String> {
 fn response_nonce(response: &reqwest::Response) -> Result<String> {
 	let nonce = response.headers()
 		.get::<hyperx::ReplayNonce>()
-		.ok_or_else(|| "Replay-Nonce header not found".to_err())?;
+		.ok_or_else(|| format_err!("Replay-Nonce header not found"))?;
 
 	Ok(nonce.as_str().to_owned())
 }
