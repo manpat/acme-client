@@ -291,31 +291,7 @@ pub const LETSENCRYPT_INTERMEDIATE_CERT_URL: &'static str = "https://letsencrypt
 const BIT_LENGTH: u32 = 2048;
 
 
-/// Error and result types.
-pub mod error {
-    pub type Result<T> = std::result::Result<T, failure::Error>;
-
-
-    #[derive(Debug, Fail)]
-    pub struct AcmeServerError(pub serde_json::Value);
-
-    impl std::fmt::Display for AcmeServerError {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "Acme server error {}", acme_server_error_description(&self.0))
-        }
-    }
-
-
-    fn acme_server_error_description(resp: &serde_json::Value) -> String {
-        if let Some(obj) = resp.as_object() {
-            let t = obj.get("type").and_then(|t| t.as_str()).unwrap_or("");
-            let detail = obj.get("detail").and_then(|d| d.as_str()).unwrap_or("");
-            format!("{} {}", t, detail)
-        } else {
-            String::new()
-        }
-    }
-}
+pub type Result<T> = std::result::Result<T, failure::Error>;
 
 
 #[cfg(test)]

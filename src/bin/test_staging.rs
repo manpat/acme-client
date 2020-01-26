@@ -4,7 +4,7 @@ use acme_client::*;
 use std::io::{Write, Read};
 use std::collections::HashMap;
 
-fn main() -> acme_client::error::Result<()> {
+fn main() -> Result<()> {
 	env_logger::init()?;
 
 	let client = AcmeClient::lets_encrypt_staging(AccountRegistration::default())?;
@@ -24,7 +24,7 @@ fn main() -> acme_client::error::Result<()> {
 
 	let (tx, rx) = channel();
 
-	std::thread::spawn(move || -> acme_client::error::Result<()> {
+	std::thread::spawn(move || -> Result<()> {
 		use std::net::TcpListener;
 
 		let listener = TcpListener::bind("0.0.0.0:8000")?;

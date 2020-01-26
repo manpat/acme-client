@@ -1,5 +1,4 @@
-
-use crate::error::*;
+use crate::Result;
 use crate::types::*;
 use serde_json::{to_string, from_str, Value, json};
 use openssl::pkey::PKey;
