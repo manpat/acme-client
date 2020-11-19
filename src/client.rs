@@ -4,6 +4,7 @@ use serde_json::{to_string, from_str, Value, json};
 use openssl::pkey::PKey;
 use openssl::x509::X509;
 use reqwest::StatusCode;
+use reqwest::header::CONTENT_TYPE;
 
 use std::cell::Cell;
 use std::io::Read;
@@ -33,7 +34,7 @@ impl AcmeClient {
 
 	/// Creates an `AcmeClient` with a directory retrieved from `directory_url`.
 	pub fn with_directory(directory_url: &str, registration: AccountRegistration) -> Result<Self> {
-		let client = reqwest::Client::new()?;
+		let client = reqwest::Client::new();
 
 		let mut response = client.get(directory_url).send()?;
 		let directory_content = response_to_string(&mut response)?;
@@ -57,8 +58,8 @@ impl AcmeClient {
 			let jws = format_jws(&nonce, &directory.new_account_uri, &pkey, None, &payload_str)?;
 
 			let mut response = client.post(&directory.new_account_uri)
-				.header(jose_json_content_type())
-				.body(&jws[..])
+				.header(CONTENT_TYPE, "application/jose+json")
+				.body(jws)
 				.send()?;
 
 			if !response.status().is_success() {
@@ -98,10 +99,10 @@ impl AcmeClient {
 		let (http_status, body, location) = {
 			let mut res = self.post_with_account(&self.directory.new_order_uri, &to_string(&payload)?)?;
 			let body = response_to_string(&mut res)?;
-			(*res.status(), body, response_location(&res)?)
+			(res.status(), body, response_location(&res)?)
 		};
 
-		if http_status != StatusCode::Created {
+		if http_status != StatusCode::CREATED {
 			bail!("Acme request failed: {}", body)
 		}
 
@@ -215,8 +216,8 @@ impl AcmeClient {
 		let jws = format_jws(&self.take_nonce()?, uri, &self.pkey, Some(&self.account_key_id), payload)?;
 
 		let mut res = self.client.post(uri)
-			.header(jose_json_content_type())
-			.body(&jws[..])
+			.header(CONTENT_TYPE, "application/jose+json")
+			.body(jws)
 			.send()?;
 
 		// Store nonce so we can use it in the next request
@@ -231,13 +232,6 @@ impl AcmeClient {
 	}
 }
 
-
-fn jose_json_content_type() -> reqwest::header::ContentType {
-	use reqwest::{header::ContentType, mime::Mime};
-	use std::str::FromStr;
-	let mime_type = Mime::from_str("application/jose+json").unwrap();
-	ContentType(mime_type)
-}
 
 
 /// Makes a Flattened JSON Web Signature from payload
@@ -360,25 +354,17 @@ fn response_to_string(response: &mut reqwest::Response) -> Result<String> {
 
 fn response_location(response: &reqwest::Response) -> Result<String> {
 	let location = response.headers()
-		.get::<reqwest::header::Location>()
+		.get(reqwest::header::LOCATION)
 		.ok_or_else(|| format_err!("Server response to account registration missing Location header"))?;
 	
-	Ok(location.as_str().to_owned())
+	Ok(location.to_str()?.to_owned())
 }
 
 fn response_nonce(response: &reqwest::Response) -> Result<String> {
 	let nonce = response.headers()
-		.get::<hyperx::ReplayNonce>()
+		.get("replay-nonce")
 		.ok_or_else(|| format_err!("Replay-Nonce header not found"))?;
 
-	Ok(nonce.as_str().to_owned())
+	Ok(nonce.to_str()?.to_owned())
 }
 
-
-
-// header! is making a public struct,
-// our custom header is private and only used privately in this module
-mod hyperx {
-	// ReplayNonce header for hyper
-	header! { (ReplayNonce, "Replay-Nonce") => [String] }
-}
